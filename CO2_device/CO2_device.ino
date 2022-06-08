@@ -1,6 +1,10 @@
+#include <u600.h>
+#include <curveFitting.h>
+#include <MovingAverageFilter.h>
 
-#include "u600.h"
-//#include <MovingAverageFilter.h>
+#define SERIAL_ENABLED_TRUE
+
+MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average 
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// U600 ///////////////////////////////////////////
@@ -90,19 +94,18 @@ void loop() {
   
     }
   }
-#ifdef DEBUG_SENSOR
+  #ifdef U600_RAW_DATA_LOG
   if (Serial2.available() > 0) {
     Serial.println(Serial2.read(), HEX);
   }
-#endif
+  #endif
 }
 
 void updateCo2(co2_t* co2Packet){
   co2 = co2Sensor.getCo2Concentration(co2Packet);
 
   z = 0.5335 * z + 0.4665 * co2;
-  //co2Avg = movingAverageFilter.process(z);
-  co2Avg = z;
+  co2Avg = movingAverageFilter.process(z);
   Serial.println("co2Avg :");
   Serial.println(co2Avg);
   assembleCapnogram(co2Avg);
@@ -252,10 +255,10 @@ void assembleCapnogram(float co2){
 
 void featureExtraction(){
   // process the capnogram
-  //extractS1Parameter();
-  //extractS6Parameter();
-  //extractS1xS6Angle();
-  //extractHjorthActivity();
+  extractS1Parameter();
+  extractS6Parameter();
+  extractS1xS6Angle();
+  extractHjorthActivity();
     
   #ifdef SERIAL_ENABLED_TRUE
   showProcessedSignal();
@@ -273,4 +276,74 @@ void featureExtraction(){
   Serial.print(" ,S3 degree : ");
   Serial.println(S3deg);
   //#endif 
+}
+
+
+void extractHjorthActivity(){
+  double co2Average = co2CumulativeSum/capnoIndex;
+  double co2DiffSquaredCumulativeSum = 0.0;
+  for(int i=0; i<capnoIndex; i++ ){
+    co2DiffSquaredCumulativeSum += sq(capnogram[i]-co2Average);
+  }
+  hjorthActivity = co2DiffSquaredCumulativeSum/capnoIndex;
+  hjorthActivity = sqrt(hjorthActivity);
+}
+
+void extractS1Parameter(){ 
+  fitCurve(1, s1EndIndex+1, timeAxis, &capnogram[0], 2, s1Coefficients);
+}
+
+void extractS6Parameter(){
+  s6StartIndex = 0; 
+  for(int i=capturedEtCo2Index; i<capnoIndex; i++){
+    if(capnogram[i] <= S6_START){
+      s6StartIndex = i;
+      break;     
+    } 
+  }
+  uint16_t s6DataPointLength = capnoIndex - s6StartIndex;
+  fitCurve(1, s6DataPointLength, &timeAxis[s6StartIndex], &capnogram[s6StartIndex], 2, s6Coefficients);
+}
+
+void extractS1xS6Angle(){
+  double m1 = s1Coefficients[1];
+  double m2 = s6Coefficients[1];
+  double tanTheta =  (m2-m1)/(1+(m1*m2));
+  S3rad = atan(tanTheta);
+  S3deg = (abs(S3rad)*180)/PI;
+  if(S3rad < 0){
+    S3deg = 180 - S3deg;
+  }
+}
+
+void showProcessedSignal(){
+  for(int i=0; i<capnoIndex; i++ ){
+    // Complete Capnogram
+    Serial.print(capnogram[i]); 
+    Serial.print(",");
+    
+    //S1 section
+    if(i<= s1EndIndex)
+      Serial.print(capnogram[i]); // S1 signal
+    else
+      Serial.print(0.0);
+    
+    Serial.print(",");    
+    Serial.print((s1Coefficients[1]*(timeAxis[i]))+s1Coefficients[0]); // S1 Linear regression y=mx+c
+
+    //S6 section
+    Serial.print(","); 
+    if(i>= s6StartIndex)
+      Serial.print(capnogram[i]); // S6 signal 
+    else{
+      Serial.print(0.0);
+    }
+    Serial.print(",");  
+    Serial.print((s6Coefficients[1]*(timeAxis[i]))+s6Coefficients[0]); // S6 Linear regression y=mx+c  
+
+    Serial.print(",");
+    Serial.print(S3deg);
+
+    Serial.println("");
+  }
 }
