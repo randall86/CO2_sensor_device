@@ -1,3 +1,5 @@
+#include <FS.h>
+#include <SD_MMC.h>
 #include <u600.h>
 #include <curveFitting.h>
 #include <MovingAverageFilter.h>
@@ -22,17 +24,6 @@ float co2Avg = 0.0;
 double co2CumulativeSum = 0.0;
 
 float hjorthActivity = 0.0;
-
-// Asthma Classification
-int result0 = 0;
-int result1 = 0;
-int result2 = 0;
-int result3 = 0;
-int data0 = 0;  
-int data1 = 0; 
-int data2 = 0;
-int data3 = 0;
-int asthma = 0;
 
 const int MAX_CAPNO_LENGTH = 300; // 300 datapoints for a maximum of 3 seconds duration of capnograms
 double capnogram[MAX_CAPNO_LENGTH];           
@@ -61,8 +52,41 @@ uint16_t s6StartIndex = 0;
 // Angle between S1 and S6
 double S3rad = 0.0;
 double S3deg = 0.0;
+
+//-------------------------------------------------------------------------------
+///////////////////////////////// SD CARD ///////////////////////////////////////
+const char * co2Avg_file = "/AVGCO2.log";
+const char * etCo2_file = "/ETCO2.log";
+const char * RR_file = "/RR.log";
+const char * insp_file = "/Insp.log";
+boolean sdCardAvailable = false;
 //----------------------------------------------------------------------------
 
+void appendFile(const char * path, const char * data){
+  File file = SD_MMC.open(path, FILE_APPEND);
+  if(!file){
+    Serial.println("Failed to open file for appending");
+    return;
+  }
+  if(!file.println(data)){
+    Serial.println("Append failed");
+  }
+  file.close();
+}
+
+void deleteFileIfAvailable(const char * path){
+  File file = SD_MMC.open(path);
+  if(file){
+    //only delete if file is available
+    if(file.available())
+    {
+      file.close();
+      if(!SD_MMC.remove(path)){
+        Serial.println("Delete failed");
+      } 
+    }
+  }
+}
 
 void setup() {
 
@@ -74,6 +98,17 @@ void setup() {
   #ifdef U600_RECALIBRATION_TRUE
   co2Sensor.recalibration();
   #endif
+  
+  if(SD_MMC.begin()){
+    if(SD_MMC.cardType() != CARD_NONE)
+    {
+      sdCardAvailable = true;
+      deleteFileIfAvailable(co2Avg_file);
+      deleteFileIfAvailable(etCo2_file);
+      deleteFileIfAvailable(RR_file);
+      deleteFileIfAvailable(insp_file);
+    }
+  }
 
   Serial.println("... Initialization completed.");
 
@@ -90,8 +125,6 @@ void loop() {
       updateEtCo2(co2Packet);
       updateRespirationRate(co2Packet);
       updateInspiration(co2Packet);
-      updateAsthmaSeverity();
-  
     }
   }
   #ifdef U600_RAW_DATA_LOG
@@ -108,8 +141,11 @@ void updateCo2(co2_t* co2Packet){
   co2Avg = movingAverageFilter.process(z);
   Serial.println("co2Avg :");
   Serial.println(co2Avg);
+  if(sdCardAvailable){
+    String co2Avg_str = String(co2Avg);
+    appendFile(co2Avg_file, const_cast<char *>(co2Avg_str.c_str()));
+  }
   assembleCapnogram(co2Avg);
-
 }
 
 void updateEtCo2(co2_t* co2Packet){
@@ -117,6 +153,10 @@ void updateEtCo2(co2_t* co2Packet){
     etCo2 = co2Sensor.getEtCo2(co2Packet);
     Serial.println("etCo2 :");
     Serial.println(etCo2);
+    if(sdCardAvailable){
+      String etCo2_str = String(etCo2);
+      appendFile(etCo2_file, const_cast<char *>(etCo2_str.c_str()));
+    }
   }
 }
 
@@ -125,6 +165,10 @@ void updateRespirationRate(co2_t* co2Packet){
     respirationRate = co2Sensor.getRespirationRate(co2Packet);
     Serial.println("respirationRate :");
     Serial.println(respirationRate);
+    if(sdCardAvailable){
+      String respRate_str = String(respirationRate);
+      appendFile(RR_file, const_cast<char *>(respRate_str.c_str()));
+    }
   }
 }
 
@@ -133,78 +177,10 @@ void updateInspiration(co2_t* co2Packet){
     inspiration = co2Sensor.getInspiration(co2Packet);
     Serial.println("inspiration :");
     Serial.println(inspiration);
-  }
-}
-
-void updateAsthmaSeverity(){
-  //  //Turns Count algorithm for classification of asthma severity
-  if ((etCo2 >= 32) && (etCo2 <= 45) && (respirationRate > 10) && (respirationRate < 30)){
-    result1 = result1 + 1;
-    result0 = 0;
-    result2 = 0;
-    result3 = 0;
-  }
-
-  if ((data1 == 1) && (etCo2 == 0) && (respirationRate == 0)){
-    data1 = 0;
-  }
-
-  if ((result1 == 20) && (data1 == 0)){
-    asthma = 1;
-    result1 = 0;
-    data1 = 1;
-  }
-
-
-  if ((etCo2 < 32) && (respirationRate > 28)){
-    result2 = result2 + 1;
-    result0 = 0;
-    result1 = 0;
-    result3 = 0;
-  }
-
-  if ((data2 == 1) && (etCo2 == 0) && (respirationRate == 0)){
-    data2 = 0;
-  }
-
-  if ((result2 == 25) && (data2 == 0)){
-    asthma = 5;
-    result2 = 0;
-    data2 = 1;
-  }
-  
-  if ((etCo2 >= 45 ) && (respirationRate < 8)){
-    result0 = result0 + 1;
-    result1 = 0;
-    result2 = 0;
-    result3 = 0;
-  }
-
-  if ((data0 == 1) && (etCo2 == 0) && (respirationRate == 0)){
-    data0 = 0;
-  }
-
-  if ((result0 == 8) && (data0 == 0)){
-    asthma = 10;
-    result0 = 0;
-    data0 = 1;
-  }
-
-  if ((etCo2 <= 5 ) ||  (respirationRate <= 5)){
-    result3 = result3 + 1;
-    result0 = 0;
-    result1 = 0;
-    result2 = 0;
-  }
-
-  if ((data3 == 1) && (etCo2 == 0) && (respirationRate == 0)){
-    data3 = 0;
-  }
-
-  if ((result3 == 4) && (data3 == 0)){
-    asthma = 0;
-    result3 = 0;
-    data3 = 1;
+    if(sdCardAvailable){
+      String insp_str = String(inspiration);
+      appendFile(insp_file, const_cast<char *>(insp_str.c_str()));
+    }
   }
 }
 
@@ -277,7 +253,6 @@ void featureExtraction(){
   Serial.println(S3deg);
   //#endif 
 }
-
 
 void extractHjorthActivity(){
   double co2Average = co2CumulativeSum/capnoIndex;
