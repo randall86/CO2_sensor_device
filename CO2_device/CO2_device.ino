@@ -9,14 +9,12 @@
 #include <curveFitting.h>
 #include <MovingAverageFilter.h>
 
-#define SDCARD_INIT
-#define SERIAL_ENABLED_TRUE
+//#define SDCARD_INIT
+//#define SHOW_PROC_SIGNAL
 
 const char * app_ver = "v0.1";
 
 MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average
-
-boolean loggingIsOn = false;
 
 //GPIO pins
 const byte VBAT_ADC = 18;
@@ -24,6 +22,11 @@ const byte SENSOR_RXD = 22;
 const byte SENSOR_TXD = 23;
 const byte BUTTON_1 = 26;
 const byte BUTTON_2 = 27;
+const byte LCD_RX2 = 33;
+const byte LCD_TX2 = 35;
+
+const char DELIM = ',';
+const char NEWLINE = '\n';
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
@@ -38,8 +41,7 @@ Ticker button2Ticker;
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// U600 ///////////////////////////////////////////
-U600 co2Sensor(Serial2, 100);
-//U600 co2Sensor(Serial2, 100, SENSOR_RXD, SENSOR_TXD);
+U600 co2Sensor(Serial2, 100, SENSOR_RXD, SENSOR_TXD);
 
 float co2 = -0.001;
 float etCo2 = -0.001;
@@ -83,11 +85,10 @@ double S3deg = 0.0;
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// SD CARD ///////////////////////////////////////
-const char * co2Avfile = "/AVGCO2.log";
-const char * etCo2_file = "/ETCO2.log";
-const char * RR_file = "/RR.log";
-const char * insp_file = "/Insp.log";
+const char * loggingFile = "/data.log";
 boolean sdCardAvailable = false;
+boolean loggingIsOn = false;
+static char patient[32] = "";
 //----------------------------------------------------------------------------
 
 boolean isLoggingOn(){
@@ -95,6 +96,35 @@ boolean isLoggingOn(){
     if(buttonPressed[0]){
         buttonPressed[0] = false; //reset the button state
         current_logging_state = !current_logging_state;
+        
+        if(current_logging_state){
+            Serial.println("Logging started ....");
+            String header = "";
+
+            if(strlen(patient)){
+                header = String("PATIENT") + String(DELIM) + 
+                        String("AVGCO2") + String(DELIM) +
+                        String("ETCO2") + String(DELIM) +
+                        String("RR") + String(DELIM) +
+                        String("AVGACTCO2") + String(DELIM) +
+                        String("S3(degree)") + String(NEWLINE);
+            }
+            else{
+                header = String("AVGCO2") + String(DELIM) +
+                        String("ETCO2") + String(DELIM) +
+                        String("RR") + String(DELIM) +
+                        String("AVGACTCO2") + String(DELIM) +
+                        String("S3(degree)") + String(NEWLINE);
+            }
+
+            Serial.print(header.c_str());
+            if(sdCardAvailable){
+                appendFile(loggingFile, const_cast<char *>(header.c_str()));
+            }
+        }
+        else{
+            Serial.println("Logging stopped ....");
+        }
     }
     return current_logging_state;
 }
@@ -169,12 +199,14 @@ void debounceBtnSWRoutine(int button_num){
 }
 
 void setup() {
-
     Serial.begin(115200);
-
     Serial.print("I-Breath CO2 Device ");
     Serial.println(app_ver);
     Serial.println("System initialization ...");
+    
+    for(int i=0; i< MAX_CAPNO_LENGTH; i++){
+        timeAxis[i] = i;
+    }
 
     pinMode(buttonPin[0], INPUT);
     pinMode(buttonPin[1], INPUT);
@@ -192,10 +224,6 @@ void setup() {
         {
             Serial.println("... SD card is available.");
             sdCardAvailable = true;
-            deleteFileIfAvailable(co2Avfile);
-            deleteFileIfAvailable(etCo2_file);
-            deleteFileIfAvailable(RR_file);
-            deleteFileIfAvailable(insp_file);
         }
     }
     #endif
@@ -210,15 +238,17 @@ void setup() {
 void loop() {
     loggingIsOn = isLoggingOn();
     co2Sensor.read();
-    Serial.println("... reading.");
+    //Serial.println("... reading.");
     while(co2Sensor.isAvailable()){
         co2_t* co2Packet = co2Sensor.getCo2Reading();
         if(co2Packet!=NULL){
-            Serial.println("... extracting data.");
+            //Serial.println("... extracting data.");
             updateCo2(co2Packet);
             updateEtCo2(co2Packet);
             updateRespirationRate(co2Packet);
             updateInspiration(co2Packet);
+            
+            doLogging();
         }
     }
     #ifdef U600_RAW_DATA_LOG
@@ -230,63 +260,26 @@ void loop() {
 
 void updateCo2(co2_t* co2Packet){
     co2 = co2Sensor.getCo2Concentration(co2Packet);
-
     z = 0.5335 * z + 0.4665 * co2;
     co2Avg = movingAverageFilter.process(z);
-
-    if(loggingIsOn){
-        Serial.println("co2Avg :");
-        Serial.println(co2Avg);
-        if(sdCardAvailable){
-            String co2Avstr = String(co2Avg);
-            appendFile(co2Avfile, const_cast<char *>(co2Avstr.c_str()));
-        }
-        assembleCapnogram(co2Avg);
-    }
+    assembleCapnogram(co2Avg);
 }
 
 void updateEtCo2(co2_t* co2Packet){
     if(co2Sensor.isEtCo2(co2Packet)){
         etCo2 = co2Sensor.getEtCo2(co2Packet);
-
-        if(loggingIsOn){
-            Serial.println("etCo2 :");
-            Serial.println(etCo2);
-            if(sdCardAvailable){
-                String etCo2_str = String(etCo2);
-                appendFile(etCo2_file, const_cast<char *>(etCo2_str.c_str()));
-            }
-        }
     }
 }
 
 void updateRespirationRate(co2_t* co2Packet){
     if(co2Sensor.isRespirationRate(co2Packet)){
         respirationRate = co2Sensor.getRespirationRate(co2Packet);
-
-        if(loggingIsOn){
-            Serial.println("respirationRate :");
-            Serial.println(respirationRate);
-            if(sdCardAvailable){
-                String respRate_str = String(respirationRate);
-                appendFile(RR_file, const_cast<char *>(respRate_str.c_str()));
-            }
-        }
     }
 }
 
 void updateInspiration(co2_t* co2Packet){
     if(co2Sensor.isInspiration(co2Packet)){
         inspiration = co2Sensor.getInspiration(co2Packet);
-
-        if(loggingIsOn){
-            Serial.println("inspiration :");
-            Serial.println(inspiration);
-            if(sdCardAvailable){
-                String insp_str = String(inspiration);
-                appendFile(insp_file, const_cast<char *>(insp_str.c_str()));
-            }
-        }
     }
 }
 
@@ -342,11 +335,8 @@ void featureExtraction(){
     extractS1xS6Angle();
     extractHjorthActivity();
         
-    #ifdef SERIAL_ENABLED_TRUE
+    #ifdef SHOW_PROC_SIGNAL
     showProcessedSignal();
-    #endif    
-
-    //#ifdef SERIAL_ENABLED_FALSE
     Serial.print("HA: ");
     Serial.print(hjorthActivity);
     Serial.print(" ,S1 slope (m1): ");
@@ -357,7 +347,7 @@ void featureExtraction(){
     Serial.print(S3rad);
     Serial.print(" ,S3 degree : ");
     Serial.println(S3deg);
-    //#endif 
+    #endif 
 }
 
 void extractHjorthActivity(){
@@ -426,5 +416,27 @@ void showProcessedSignal(){
         Serial.print(S3deg);
 
         Serial.println("");
+    }
+}
+
+void doLogging(){
+    if(loggingIsOn){
+        String log = "";
+        String co2_data = String(co2Avg) + String(DELIM) +
+                        String(etCo2) + String(DELIM) +
+                        String(respirationRate) + String(DELIM) +
+                        String(hjorthActivity) + String(DELIM) +
+                        String(S3deg) + String(NEWLINE);
+        //prepend patient name if available
+        if(strlen(patient)){
+            log = String(patient) + String(DELIM) + co2_data;
+        }
+        else{
+            log = co2_data;
+        }
+        Serial.print(log.c_str());
+        if(sdCardAvailable){
+            appendFile(loggingFile, const_cast<char *>(log.c_str()));
+        }
     }
 }
