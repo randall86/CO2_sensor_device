@@ -29,6 +29,13 @@ const char DELIM = ',';
 const char NEWLINE = '\n';
 
 //-------------------------------------------------------------------------------
+/////////////////////////////////// LCD /////////////////////////////////////////
+const char HA_ADDR = 0x11;
+const char ETCO2_ADDR = 0x12;
+const char RR_ADDR = 0x13;
+const char S3_ADDR = 0x14;
+
+//-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
 const int BTN_CHECK_MS = 10;
@@ -85,10 +92,10 @@ double S3deg = 0.0;
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// SD CARD ///////////////////////////////////////
-const char * loggingFile = "/data.log";
+const char * loggingFile = "/data.csv";
 boolean sdCardAvailable = false;
 boolean loggingIsOn = false;
-static char patient[32] = "";
+String patient = "";
 //----------------------------------------------------------------------------
 
 boolean isLoggingOn(){
@@ -101,7 +108,7 @@ boolean isLoggingOn(){
             Serial.println("Logging started ....");
             String header = "";
 
-            if(strlen(patient)){
+            if(patient.length()){
                 header = String("PATIENT") + String(DELIM) + 
                         String("AVGCO2") + String(DELIM) +
                         String("ETCO2") + String(DELIM) +
@@ -204,6 +211,9 @@ void setup() {
     Serial.println(app_ver);
     Serial.println("System initialization ...");
     
+    //LCD serial line
+    Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
+    
     for(int i=0; i< MAX_CAPNO_LENGTH; i++){
         timeAxis[i] = i;
     }
@@ -249,13 +259,13 @@ void loop() {
             updateInspiration(co2Packet);
             
             doLogging();
+            
+            updateEtCo2Disp();
+            updateRespirationRateDisp();
+            updateHjorthActDisplay();
+            updateS3DegDisplay();
         }
     }
-    #ifdef U600_RAW_DATA_LOG
-    if (Serial2.available() > 0) {
-        Serial.println(Serial2.read(), HEX);
-    }
-    #endif
 }
 
 void updateCo2(co2_t* co2Packet){
@@ -428,15 +438,93 @@ void doLogging(){
                         String(hjorthActivity) + String(DELIM) +
                         String(S3deg) + String(NEWLINE);
         //prepend patient name if available
-        if(strlen(patient)){
-            log = String(patient) + String(DELIM) + co2_data;
+        if(patient.length()){
+            log = patient + String(DELIM) + co2_data;
         }
         else{
             log = co2_data;
         }
+
         Serial.print(log.c_str());
+
         if(sdCardAvailable){
             appendFile(loggingFile, const_cast<char *>(log.c_str()));
+        }
+    }
+}
+
+void updateEtCo2Disp(){
+    static float etCo2_cached = -0.001;
+    if(etCo2_cached != etCo2){
+        etCo2_cached = etCo2;
+        String str = String(etCo2);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, ETCO2_ADDR, 0x00}; 
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: ETCO2");
+        }
+    }
+}
+
+void updateRespirationRateDisp(){
+    static float RR_cached = -0.001;
+    if(RR_cached != respirationRate){
+        RR_cached = respirationRate;
+        String str = String(respirationRate);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, RR_ADDR, 0x00}; 
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: Respiration Rate");
+        }
+    }
+}
+
+void updateHjorthActDisplay(){
+    static float HA_cached = 0.0;
+    if(HA_cached != hjorthActivity){
+        HA_cached = hjorthActivity;
+        String str = String(hjorthActivity);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HA_ADDR, 0x00}; 
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: Hjorth Activity");
+        }
+    }
+}
+
+void updateS3DegDisplay(){
+    static float S3deg_cached = 0.0;
+    if(S3deg_cached != S3deg){
+        S3deg_cached = S3deg;
+        String str = String(S3deg);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, S3_ADDR, 0x00}; 
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: S3(degree)");
         }
     }
 }
