@@ -1,6 +1,9 @@
 // I-Breath CO2 Device
 // Rev 0.1 (16/06/2022)
 // - Infinecs
+//Serial - UART serial monitor
+//Serial1 - LCD 
+//Serial2 - CO2 sensor
 
 #include <Ticker.h>
 #include <FS.h>
@@ -34,7 +37,10 @@ const char HA_ADDR = 0x11;
 const char ETCO2_ADDR = 0x12;
 const char RR_ADDR = 0x13;
 const char S3_ADDR = 0x14;
+const char CURVE_ADDR_MSB = 0x03;
+const char CURVE_ADDR_LSB = 0x10;
 
+uint8_t lcd_buf[100] = {};
 //-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
@@ -260,11 +266,16 @@ void loop() {
             
             doLogging();
             
+            updateCo2Disp();
             updateEtCo2Disp();
             updateRespirationRateDisp();
             updateHjorthActDisplay();
             updateS3DegDisplay();
         }
+    }
+    
+    if(Serial1.available() > 0){
+        int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
     }
 }
 
@@ -453,6 +464,16 @@ void doLogging(){
     }
 }
 
+void updateCo2Disp(){
+    static float co2Avg_cached = 0.0;
+    if(co2Avg_cached != co2Avg){
+        co2Avg_cached = co2Avg;
+        char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, CURVE_ADDR_MSB, CURVE_ADDR_LSB, 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
+        memcpy(&buf[12], &co2Avg, sizeof(co2Avg));
+        Serial1.write(buf, sizeof(buf));
+    }
+}
+
 void updateEtCo2Disp(){
     static float etCo2_cached = -0.001;
     if(etCo2_cached != etCo2){
@@ -463,7 +484,6 @@ void updateEtCo2Disp(){
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
             memcpy(&buf[6], str.c_str(), str.length());
-            
             Serial1.write(buf, (str.length() + 6));
         }
         else{
@@ -482,7 +502,6 @@ void updateRespirationRateDisp(){
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
             memcpy(&buf[6], str.c_str(), str.length());
-            
             Serial1.write(buf, (str.length() + 6));
         }
         else{
@@ -501,7 +520,6 @@ void updateHjorthActDisplay(){
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
             memcpy(&buf[6], str.c_str(), str.length());
-            
             Serial1.write(buf, (str.length() + 6));
         }
         else{
@@ -520,7 +538,6 @@ void updateS3DegDisplay(){
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
             memcpy(&buf[6], str.c_str(), str.length());
-            
             Serial1.write(buf, (str.length() + 6));
         }
         else{
