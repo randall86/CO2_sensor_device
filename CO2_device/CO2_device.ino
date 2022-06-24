@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 0.1 (16/06/2022)
+// Rev 0.2 (25/06/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -12,10 +12,13 @@
 #include <curveFitting.h>
 #include <MovingAverageFilter.h>
 
-//#define SDCARD_INIT
+#define SDCARD_INIT
 //#define SHOW_PROC_SIGNAL
 
-const char * app_ver = "v0.1";
+#define LOW_BYTE(x)     ((byte)((x)&0xFF))
+#define HIGH_BYTE(x)    ((byte)(((x)>>8)&0xFF))
+
+const char * app_ver = "v0.2";
 
 MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average
 
@@ -32,15 +35,19 @@ const char DELIM = ',';
 const char NEWLINE = '\n';
 
 //-------------------------------------------------------------------------------
+/////////////////////////////////// RTC /////////////////////////////////////////
+Ticker rtcTicker;
+String currTime = "00:00:00";
+//-------------------------------------------------------------------------------
 /////////////////////////////////// LCD /////////////////////////////////////////
-const char HA_ADDR = 0x11;
-const char ETCO2_ADDR = 0x12;
-const char RR_ADDR = 0x13;
-const char S3_ADDR = 0x14;
-const char CURVE_ADDR_MSB = 0x03;
-const char CURVE_ADDR_LSB = 0x10;
+const uint16_t HA_ADDR = 0x1100;
+const uint16_t ETCO2_ADDR = 0x1200;
+const uint16_t RR_ADDR = 0x1300;
+const uint16_t S3_ADDR = 0x1400;
+const uint16_t CURVE_ADDR = 0x0310;
+const uint16_t RTC_SYSVAR_ADDR = 0x0010;
 
-uint8_t lcd_buf[100] = {};
+byte lcd_buf[100] = {};
 //-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
@@ -48,7 +55,7 @@ const int BTN_CHECK_MS = 10;
 static byte buttonPin[2] = {BUTTON_1, BUTTON_2};
 static byte debouncedBtnState[2] = {1, 1};
 static bool buttonPressed[2] = {false, false};
-static uint8_t buttonCount[2] = {BTN_DEBOUNCE_MS/BTN_CHECK_MS, BTN_DEBOUNCE_MS/BTN_CHECK_MS};
+static byte buttonCount[2] = {BTN_DEBOUNCE_MS/BTN_CHECK_MS, BTN_DEBOUNCE_MS/BTN_CHECK_MS};
 Ticker button1Ticker;
 Ticker button2Ticker;
 
@@ -115,7 +122,8 @@ boolean isLoggingOn(){
             String header = "";
 
             if(patient.length()){
-                header = String("PATIENT") + String(DELIM) + 
+                header = String("TIME") + String(DELIM) +
+                        String("PATIENT") + String(DELIM) +
                         String("AVGCO2") + String(DELIM) +
                         String("ETCO2") + String(DELIM) +
                         String("RR") + String(DELIM) +
@@ -123,7 +131,8 @@ boolean isLoggingOn(){
                         String("S3(degree)") + String(NEWLINE);
             }
             else{
-                header = String("AVGCO2") + String(DELIM) +
+                header = String("TIME") + String(DELIM) +
+                        String("AVGCO2") + String(DELIM) +
                         String("ETCO2") + String(DELIM) +
                         String("RR") + String(DELIM) +
                         String("AVGACTCO2") + String(DELIM) +
@@ -211,21 +220,42 @@ void debounceBtnSWRoutine(int button_num){
     }
 }
 
+void updateTime(){
+    char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
+    Serial1.write(buf, sizeof(buf));
+
+    if(Serial1.available() > 0){
+        int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+        byte payload_len = lcd_buf[2];
+
+        if(len == (payload_len + 3)){ //validate payload length
+            char timeStr[10] = {};
+            //lcd_buf[13], lcd_buf[12], lcd_buf[11], lcd_buf[9], lcd_buf[8], (2000+lcd_buf[7]) //sc, mn, hr, dy, mt, yr
+            sprintf(timeStr, "%02d:%02d:%02d", lcd_buf[11], lcd_buf[12], lcd_buf[13]);
+
+            Serial.println("... Updating time from module.");
+            currTime = String(timeStr);
+        }
+        else{
+            Serial.println("... Failed to update time from module.");
+        }
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     Serial.print("I-Breath CO2 Device ");
     Serial.println(app_ver);
     Serial.println("System initialization ...");
-    
-    //LCD serial line
-    Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-    
+
     for(int i=0; i< MAX_CAPNO_LENGTH; i++){
         timeAxis[i] = i;
     }
 
-    pinMode(buttonPin[0], INPUT);
-    pinMode(buttonPin[1], INPUT);
+    //LCD serial line
+    Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
+    Serial.println("... Updating time ...");
+    updateTime(); //query RTC from LCD module and update self
 
     Serial.println("... Initializing CO2 sensor.");
     co2Sensor.init();
@@ -244,9 +274,12 @@ void setup() {
     }
     #endif
 
-    Serial.println("... Initializing button tickers");
+    Serial.println("... Initializing buttons");
+    pinMode(buttonPin[0], INPUT);
+    pinMode(buttonPin[1], INPUT);
     button1Ticker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0);
     button2Ticker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 1);
+    rtcTicker.attach(1, updateTime); //sync the time every 1 sec
 
     Serial.println("... Initialization completed. Push button to start logging.");
 }
@@ -254,11 +287,9 @@ void setup() {
 void loop() {
     loggingIsOn = isLoggingOn();
     co2Sensor.read();
-    //Serial.println("... reading.");
     while(co2Sensor.isAvailable()){
         co2_t* co2Packet = co2Sensor.getCo2Reading();
         if(co2Packet!=NULL){
-            //Serial.println("... extracting data.");
             updateCo2(co2Packet);
             updateEtCo2(co2Packet);
             updateRespirationRate(co2Packet);
@@ -273,7 +304,8 @@ void loop() {
             updateS3DegDisplay();
         }
     }
-    
+
+    //check the payload from LCD for the patient name
     if(Serial1.available() > 0){
         int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
     }
@@ -450,10 +482,10 @@ void doLogging(){
                         String(S3deg) + String(NEWLINE);
         //prepend patient name if available
         if(patient.length()){
-            log = patient + String(DELIM) + co2_data;
+            log = currTime + String(DELIM) + patient + String(DELIM) + co2_data;
         }
         else{
-            log = co2_data;
+            log = currTime + String(DELIM) + co2_data;
         }
 
         Serial.print(log.c_str());
@@ -468,7 +500,7 @@ void updateCo2Disp(){
     static float co2Avg_cached = 0.0;
     if(co2Avg_cached != co2Avg){
         co2Avg_cached = co2Avg;
-        char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, CURVE_ADDR_MSB, CURVE_ADDR_LSB, 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
+        char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, HIGH_BYTE(CURVE_ADDR), LOW_BYTE(CURVE_ADDR), 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
         memcpy(&buf[12], &co2Avg, sizeof(co2Avg));
         Serial1.write(buf, sizeof(buf));
     }
@@ -479,7 +511,7 @@ void updateEtCo2Disp(){
     if(etCo2_cached != etCo2){
         etCo2_cached = etCo2;
         String str = String(etCo2);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, ETCO2_ADDR, 0x00}; 
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(ETCO2_ADDR), LOW_BYTE(ETCO2_ADDR)};
 
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
@@ -497,7 +529,7 @@ void updateRespirationRateDisp(){
     if(RR_cached != respirationRate){
         RR_cached = respirationRate;
         String str = String(respirationRate);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, RR_ADDR, 0x00}; 
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(RR_ADDR), LOW_BYTE(RR_ADDR)};
 
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
@@ -515,7 +547,7 @@ void updateHjorthActDisplay(){
     if(HA_cached != hjorthActivity){
         HA_cached = hjorthActivity;
         String str = String(hjorthActivity);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HA_ADDR, 0x00}; 
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(HA_ADDR), LOW_BYTE(HA_ADDR)};
 
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
@@ -533,7 +565,7 @@ void updateS3DegDisplay(){
     if(S3deg_cached != S3deg){
         S3deg_cached = S3deg;
         String str = String(S3deg);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, S3_ADDR, 0x00}; 
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(S3_ADDR), LOW_BYTE(S3_ADDR)};
 
         if((str.length() + 6) <= sizeof(buf)){
             buf[2] = str.length() + 3; //update length
