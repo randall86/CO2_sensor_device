@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 0.2 (25/06/2022)
+// Rev 1.0 (25/06/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -11,6 +11,7 @@
 #include <u600.h>
 #include <curveFitting.h>
 #include <MovingAverageFilter.h>
+#include <ESP32Time.h>
 
 #define SDCARD_INIT
 //#define SHOW_PROC_SIGNAL
@@ -18,7 +19,7 @@
 #define LOW_BYTE(x)     ((byte)((x)&0xFF))
 #define HIGH_BYTE(x)    ((byte)(((x)>>8)&0xFF))
 
-const char * app_ver = "v0.2";
+const char * app_ver = "v1.0";
 
 MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average
 
@@ -36,8 +37,9 @@ const char NEWLINE = '\n';
 
 //-------------------------------------------------------------------------------
 /////////////////////////////////// RTC /////////////////////////////////////////
+const long RTC_OFFSET = 28800; //offset in seconds GMT+8
 Ticker rtcTicker;
-String currTime = "00:00:00";
+ESP32Time rtc(RTC_OFFSET);
 //-------------------------------------------------------------------------------
 /////////////////////////////////// LCD /////////////////////////////////////////
 const uint16_t HA_ADDR = 0x1100;
@@ -47,7 +49,9 @@ const uint16_t S3_ADDR = 0x1400;
 const uint16_t CURVE_ADDR = 0x0310;
 const uint16_t RTC_SYSVAR_ADDR = 0x0010;
 
+const int DISP_REFRESH_MS = 100;
 byte lcd_buf[100] = {};
+Ticker displayTicker;
 //-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
@@ -56,8 +60,7 @@ static byte buttonPin[2] = {BUTTON_1, BUTTON_2};
 static byte debouncedBtnState[2] = {1, 1};
 static bool buttonPressed[2] = {false, false};
 static byte buttonCount[2] = {BTN_DEBOUNCE_MS/BTN_CHECK_MS, BTN_DEBOUNCE_MS/BTN_CHECK_MS};
-Ticker button1Ticker;
-Ticker button2Ticker;
+Ticker buttonTicker;
 
 //-------------------------------------------------------------------------------
 ///////////////////////////////// U600 ///////////////////////////////////////////
@@ -109,6 +112,7 @@ const char * loggingFile = "/data.csv";
 boolean sdCardAvailable = false;
 boolean loggingIsOn = false;
 String patient = "";
+Ticker loggingTicker;
 //----------------------------------------------------------------------------
 
 boolean isLoggingOn(){
@@ -230,11 +234,7 @@ void updateTime(){
 
         if(len == (payload_len + 3)){ //validate payload length
             char timeStr[10] = {};
-            //lcd_buf[13], lcd_buf[12], lcd_buf[11], lcd_buf[9], lcd_buf[8], (2000+lcd_buf[7]) //sc, mn, hr, dy, mt, yr
-            sprintf(timeStr, "%02d:%02d:%02d", lcd_buf[11], lcd_buf[12], lcd_buf[13]);
-
-            Serial.println("... Updating time from module.");
-            currTime = String(timeStr);
+            rtc.setTime(lcd_buf[13], lcd_buf[12], lcd_buf[11], lcd_buf[9], lcd_buf[8], (2000+lcd_buf[7])); //sc, mn, hr, dy, mt, yr
         }
         else{
             Serial.println("... Failed to update time from module.");
@@ -254,7 +254,6 @@ void setup() {
 
     //LCD serial line
     Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-    Serial.println("... Updating time ...");
     updateTime(); //query RTC from LCD module and update self
 
     Serial.println("... Initializing CO2 sensor.");
@@ -277,8 +276,8 @@ void setup() {
     Serial.println("... Initializing buttons");
     pinMode(buttonPin[0], INPUT);
     pinMode(buttonPin[1], INPUT);
-    button1Ticker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0);
-    button2Ticker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 1);
+    buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0);
+    displayTicker.attach_ms(DISP_REFRESH_MS, updateDisplay);
     rtcTicker.attach(1, updateTime); //sync the time every 1 sec
 
     Serial.println("... Initialization completed. Push button to start logging.");
@@ -294,14 +293,7 @@ void loop() {
             updateEtCo2(co2Packet);
             updateRespirationRate(co2Packet);
             updateInspiration(co2Packet);
-            
             doLogging();
-            
-            updateCo2Disp();
-            updateEtCo2Disp();
-            updateRespirationRateDisp();
-            updateHjorthActDisplay();
-            updateS3DegDisplay();
         }
     }
 
@@ -474,6 +466,16 @@ void showProcessedSignal(){
 
 void doLogging(){
     if(loggingIsOn){
+        char time_str[9] = {};
+        long epoch = rtc.getLocalEpoch();
+        byte sec = epoch % 60; 
+        epoch /= 60;
+        byte min = epoch % 60; 
+        epoch /= 60;
+        byte hour = epoch % 24; 
+        epoch /= 24;
+        sprintf(time_str, "%02d:%02d:%02d", hour, min, sec);
+  
         String log = "";
         String co2_data = String(co2Avg) + String(DELIM) +
                         String(etCo2) + String(DELIM) +
@@ -482,10 +484,10 @@ void doLogging(){
                         String(S3deg) + String(NEWLINE);
         //prepend patient name if available
         if(patient.length()){
-            log = currTime + String(DELIM) + patient + String(DELIM) + co2_data;
+            log = String(time_str) + String(DELIM) + patient + String(DELIM) + co2_data;
         }
         else{
-            log = currTime + String(DELIM) + co2_data;
+            log = String(time_str) + String(DELIM) + co2_data;
         }
 
         Serial.print(log.c_str());
@@ -494,6 +496,14 @@ void doLogging(){
             appendFile(loggingFile, const_cast<char *>(log.c_str()));
         }
     }
+}
+
+void updateDisplay(){
+    updateCo2Disp();
+    updateEtCo2Disp();
+    updateRespirationRateDisp();
+    updateHjorthActDisplay();
+    updateS3DegDisplay();
 }
 
 void updateCo2Disp(){
