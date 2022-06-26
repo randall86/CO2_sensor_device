@@ -29,8 +29,10 @@ const byte SENSOR_RXD = 22;
 const byte SENSOR_TXD = 23;
 const byte BUTTON_1 = 26;
 const byte BUTTON_2 = 27;
-const byte LCD_RX2 = 33;
-const byte LCD_TX2 = 35;
+//const byte LCD_RX2 = 33;
+//const byte LCD_TX2 = 35;
+const byte LCD_RX2 = 16;
+const byte LCD_TX2 = 17;
 
 const char DELIM = ',';
 const char NEWLINE = '\n';
@@ -254,7 +256,7 @@ void setup() {
 
     //LCD serial line
     Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-    updateTime(); //query RTC from LCD module and update self
+    //updateTime(); //query RTC from LCD module and update self
 
     Serial.println("... Initializing CO2 sensor.");
     co2Sensor.init();
@@ -278,7 +280,7 @@ void setup() {
     pinMode(buttonPin[1], INPUT);
     buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0);
     displayTicker.attach_ms(DISP_REFRESH_MS, updateDisplay);
-    rtcTicker.attach(1, updateTime); //sync the time every 1 sec
+    //rtcTicker.attach(1, updateTime); //sync the time every 1 sec
 
     Serial.println("... Initialization completed. Push button to start logging.");
 }
@@ -298,9 +300,9 @@ void loop() {
     }
 
     //check the payload from LCD for the patient name
-    if(Serial1.available() > 0){
-        int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
-    }
+    //if(Serial1.available() > 0){
+    //    int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+    //}
 }
 
 void updateCo2(co2_t* co2Packet){
@@ -510,8 +512,12 @@ void updateCo2Disp(){
     static float co2Avg_cached = 0.0;
     if(co2Avg_cached != co2Avg){
         co2Avg_cached = co2Avg;
+        int32_t co2AvgInt = co2Avg*100;
         char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, HIGH_BYTE(CURVE_ADDR), LOW_BYTE(CURVE_ADDR), 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
-        memcpy(&buf[12], &co2Avg, sizeof(co2Avg));
+        buf[12] = (co2AvgInt >> 24) & 0xFF;
+        buf[13] = (co2AvgInt >> 16) & 0xFF;
+        buf[14] = (co2AvgInt >> 8) & 0xFF;
+        buf[15] = (co2AvgInt & 0xFF);
         Serial1.write(buf, sizeof(buf));
     }
 }
