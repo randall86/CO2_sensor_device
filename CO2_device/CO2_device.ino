@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 1.0 (25/06/2022)
+// Rev 1.1 (02/07/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -13,17 +13,19 @@
 #include <MovingAverageFilter.h>
 #include <ESP32Time.h>
 
+#define DEBUG_LCD
 #define SDCARD_INIT
 //#define SHOW_PROC_SIGNAL
 
 #define LOW_BYTE(x)     ((byte)((x)&0xFF))
 #define HIGH_BYTE(x)    ((byte)(((x)>>8)&0xFF))
 
-const char * app_ver = "v1.0";
+const char * app_ver = "v1.1";
 
 MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average
 
 //GPIO pins
+const byte USER_LED1 = 5;
 const byte VBAT_ADC = 18;
 const byte SENSOR_RXD = 22;
 const byte SENSOR_TXD = 23;
@@ -54,6 +56,7 @@ const uint16_t RTC_SYSVAR_ADDR = 0x0010;
 const int DISP_REFRESH_MS = 100;
 byte lcd_buf[100] = {};
 Ticker displayTicker;
+Ticker lcdInputTicker;
 //-------------------------------------------------------------------------------
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
@@ -149,9 +152,12 @@ boolean isLoggingOn(){
             if(sdCardAvailable){
                 appendFile(loggingFile, const_cast<char *>(header.c_str()));
             }
+            
+            digitalWrite(USER_LED1, HIGH);
         }
         else{
             Serial.println("Logging stopped ....");
+            digitalWrite(USER_LED1, LOW);
         }
     }
     return current_logging_state;
@@ -227,19 +233,21 @@ void debounceBtnSWRoutine(int button_num){
 }
 
 void updateTime(){
-    char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
-    Serial1.write(buf, sizeof(buf));
-
-    if(Serial1.available() > 0){
-        int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
-        byte payload_len = lcd_buf[2];
-
-        if(len == (payload_len + 3)){ //validate payload length
-            char timeStr[10] = {};
-            rtc.setTime(lcd_buf[13], lcd_buf[12], lcd_buf[11], lcd_buf[9], lcd_buf[8], (2000+lcd_buf[7])); //sc, mn, hr, dy, mt, yr
-        }
-        else{
-            Serial.println("... Failed to update time from module.");
+    if(!loggingIsOn){ //only update the time if logging is not on
+        char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
+        Serial1.write(buf, sizeof(buf));
+    
+        if(Serial1.available() > 0){
+            int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+            byte payload_len = lcd_buf[2];
+    
+            if(len == (payload_len + 3)){ //validate payload length
+                char timeStr[10] = {};
+                rtc.setTime(lcd_buf[13], lcd_buf[12], lcd_buf[11], lcd_buf[9], lcd_buf[8], (2000+lcd_buf[7])); //sc, mn, hr, dy, mt, yr
+            }
+            else{
+                Serial.println("... Failed to update time from module.");
+            }
         }
     }
 }
@@ -274,12 +282,15 @@ void setup() {
         }
     }
     #endif
+    
+    pinMode(USER_LED1, OUTPUT);
 
     Serial.println("... Initializing buttons");
     pinMode(buttonPin[0], INPUT);
     pinMode(buttonPin[1], INPUT);
-    buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0);
+    buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0); //debouncing for button[0]
     displayTicker.attach_ms(DISP_REFRESH_MS, updateDisplay);
+    lcdInputTicker.attach_ms(DISP_REFRESH_MS*3, checkInputCmd);
     //rtcTicker.attach(1, updateTime); //sync the time every 1 sec
 
     Serial.println("... Initialization completed. Push button to start logging.");
@@ -298,11 +309,6 @@ void loop() {
             doLogging();
         }
     }
-
-    //check the payload from LCD for the patient name
-    //if(Serial1.available() > 0){
-    //    int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
-    //}
 }
 
 void updateCo2(co2_t* co2Packet){
@@ -501,11 +507,34 @@ void doLogging(){
 }
 
 void updateDisplay(){
-    updateCo2Disp();
-    updateEtCo2Disp();
-    updateRespirationRateDisp();
-    updateHjorthActDisplay();
-    updateS3DegDisplay();
+    if(loggingIsOn)
+    {
+        updateCo2Disp();
+        updateEtCo2Disp();
+        updateRespirationRateDisp();
+        updateHjorthActDisplay();
+        updateS3DegDisplay();
+    }
+}
+
+void checkInputCmd(){
+    if(!loggingIsOn){ //check for input cmd from lcd
+        if(Serial1.available() > 0){
+            int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+            #ifdef DEBUG_LCD
+            for(int i = 0; i < len; i++)
+            {
+                Serial.print(lcd_buf[i], HEX);
+                Serial.print("h ");
+            }
+            Serial.println();
+            #endif
+            
+            //handle patient name
+            
+            //handle sensor zero calibration
+        }
+    }
 }
 
 void updateCo2Disp(){
