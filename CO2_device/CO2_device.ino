@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 1.2 (12/07/2022)
+// Rev 1.2 (14/07/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -13,7 +13,7 @@
 #include <MovingAverageFilter.h>
 #include <ESP32Time.h>
 
-#define DEBUG_LCD
+//#define DEBUG_LCD
 #define SDCARD_INIT
 //#define SHOW_PROC_SIGNAL
 
@@ -52,7 +52,7 @@ const uint16_t CURVE_ADDR = 0x0310;
 const uint16_t RTC_SYSVAR_ADDR = 0x0010;
 const uint16_t DATA_RTN_ADDR = 0x2100;
 
-const int DISP_REFRESH_MS = 100;
+const int DISP_DELAY_MS = 100;
 byte lcd_buf[100] = {};
 Ticker displayTicker;
 Ticker lcdInputTicker;
@@ -122,6 +122,117 @@ char name_str[MAX_NAME_LEN + 1] = {}; //+1 for NULL
 Ticker loggingTicker;
 //----------------------------------------------------------------------------
 
+void resetData(){
+    co2Avg = 0.0;
+    etCo2 = 0.00;
+    respirationRate = 0.00;
+    hjorthActivity = 0.0;
+    S3deg = 0.0;
+}
+
+void updateCo2Disp(){
+    static float co2Avg_cached = 0.0;
+    if(co2Avg_cached != co2Avg){
+        co2Avg_cached = co2Avg;
+        int32_t co2AvgInt = co2Avg*100;
+        char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, HIGH_BYTE(CURVE_ADDR), LOW_BYTE(CURVE_ADDR), 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
+        buf[12] = (co2AvgInt >> 24) & 0xFF;
+        buf[13] = (co2AvgInt >> 16) & 0xFF;
+        buf[14] = (co2AvgInt >> 8) & 0xFF;
+        buf[15] = (co2AvgInt & 0xFF);
+        Serial1.write(buf, sizeof(buf));
+    }
+}
+
+void updateEtCo2Disp(){
+    static float etCo2_cached = -0.001;
+    if(etCo2_cached != etCo2){
+        etCo2_cached = etCo2;
+        String str = String(etCo2);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(ETCO2_ADDR), LOW_BYTE(ETCO2_ADDR)};
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: ETCO2");
+        }
+    }
+}
+
+void updateRespirationRateDisp(){
+    static float RR_cached = -0.001;
+    if(RR_cached != respirationRate){
+        RR_cached = respirationRate;
+        String str = String(respirationRate);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(RR_ADDR), LOW_BYTE(RR_ADDR)};
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: Respiration Rate");
+        }
+    }
+}
+
+void updateHjorthActDisplay(){
+    static float HA_cached = 0.0;
+    if(HA_cached != hjorthActivity){
+        HA_cached = hjorthActivity;
+        String str = String(hjorthActivity);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(HA_ADDR), LOW_BYTE(HA_ADDR)};
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: Hjorth Activity");
+        }
+    }
+}
+
+void updateS3DegDisplay(){
+    static float S3deg_cached = 0.0;
+    if(S3deg_cached != S3deg){
+        S3deg_cached = S3deg;
+        String str = String(S3deg);
+        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(S3_ADDR), LOW_BYTE(S3_ADDR)};
+
+        if((str.length() + 6) <= sizeof(buf)){
+            buf[2] = str.length() + 3; //update length
+            memcpy(&buf[6], str.c_str(), str.length());
+            Serial1.write(buf, (str.length() + 6));
+        }
+        else{
+            Serial.println("Insufficient buffer size: S3(degree)");
+        }
+    }
+}
+
+void updateDisplay(){
+    if(loggingIsOn){
+        updateCo2Disp();
+        updateEtCo2Disp();
+        updateRespirationRateDisp();
+        updateHjorthActDisplay();
+        updateS3DegDisplay();
+    }
+}
+
+void requestCurrTime(){
+    if(!loggingIsOn){ //only request the time if logging is not on
+        char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
+        Serial1.write(buf, sizeof(buf));
+    }
+}
+
 boolean isLoggingOn(){
     static boolean current_logging_state = false;
     if(buttonPressed[0]){
@@ -160,7 +271,10 @@ boolean isLoggingOn(){
         else{
             Serial.println("Logging stopped ....");
             digitalWrite(USER_LED1, LOW);
-            requestCurrTime();
+            requestCurrTime(); //query RTC from LCD module
+            delay(DISP_DELAY_MS);
+            resetData();
+            updateDisplay();
         }
     }
     return current_logging_state;
@@ -235,67 +349,56 @@ void debounceBtnSWRoutine(int button_num){
     }
 }
 
-void requestCurrTime(){
-    if(!loggingIsOn){ //only request the time if logging is not on
-        char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
-        Serial1.write(buf, sizeof(buf));
-    }
-}
 
-void setup() {
-    Serial.begin(115200);
-    Serial.print("I-Breath CO2 Device ");
-    Serial.println(app_ver);
-    Serial.println("System initialization ...");
+void checkInputCmd(){
+    if(!loggingIsOn){ //check for input cmd from lcd
+        if(Serial1.available() > 0){
+            int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+            lcd_buf[len] = 0; //null terminate
+            #ifdef DEBUG_LCD
+            for(int i = 0; i < len; i++){
+                Serial.print(lcd_buf[i], HEX);
+                Serial.print("h ");
+            }
+            Serial.println();
+            #endif
 
-    for(int i=0; i< MAX_CAPNO_LENGTH; i++){
-        timeAxis[i] = i;
-    }
+            char data_rtn_hdr[3] = {0x83, HIGH_BYTE(DATA_RTN_ADDR), LOW_BYTE(DATA_RTN_ADDR)};
+            char rtc_hdr[3] = {0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR)};
+            char *str = NULL;
 
-    //LCD serial line
-    Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-    requestCurrTime(); //query RTC from LCD module
-
-    Serial.println("... Initializing CO2 sensor.");
-    co2Sensor.init();
-
-    #ifdef U600_RECALIBRATION_TRUE
-    co2Sensor.recalibration();
-    #endif
-
-    #ifdef SDCARD_INIT
-    Serial.println("... Initializing SD card.");
-    if(SD_MMC.begin()){
-        if(SD_MMC.cardType() != CARD_NONE)
-        {
-            Serial.println("... SD card is available.");
-            sdCardAvailable = true;
-        }
-    }
-    #endif
-    
-    Serial.println("... Initializing I/O.");
-    pinMode(USER_LED1, OUTPUT);
-    pinMode(buttonPin[0], INPUT);
-    pinMode(buttonPin[1], INPUT);
-    buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0); //debouncing for button[0]
-    displayTicker.attach_ms(DISP_REFRESH_MS, updateDisplay);
-    lcdInputTicker.attach_ms(DISP_REFRESH_MS*3, checkInputCmd);
-
-    Serial.println("... Initialization completed. Push button to start logging.");
-}
-
-void loop() {
-    loggingIsOn = isLoggingOn();
-    co2Sensor.read();
-    while(co2Sensor.isAvailable()){
-        co2_t* co2Packet = co2Sensor.getCo2Reading();
-        if(co2Packet!=NULL){
-            updateCo2(co2Packet);
-            updateEtCo2(co2Packet);
-            updateRespirationRate(co2Packet);
-            updateInspiration(co2Packet);
-            doLogging();
+            //handle patient name - check for matching header
+            if((str = strstr(reinterpret_cast<char *>(lcd_buf), data_rtn_hdr)) != NULL){
+                byte name_len = *(str + 3);
+                //verify the total data of at least the name len is available
+                if( len > ((str - reinterpret_cast<char *>(lcd_buf)) + name_len) ){
+                    byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
+                    for(int i = index; i < len; i++){
+                        if(lcd_buf[i] == 0xFF){
+                            byte cpy_len = (i - index) - 1;
+                            if(cpy_len > MAX_NAME_LEN){
+                                cpy_len = MAX_NAME_LEN;
+                            }
+                            memcpy(name_str, &lcd_buf[index], cpy_len);
+                            patient = String(name_str);
+                        }
+                    }
+                }    
+            }
+            //handle rtc reply - check for matching header
+            else if((str = strstr(reinterpret_cast<char *>(lcd_buf), rtc_hdr)) != NULL){
+                byte date_len = *(str + 3); //len in word
+                if( len >= ((str - reinterpret_cast<char *>(lcd_buf)) + (date_len*2) + sizeof(rtc_hdr) + 1) ){
+                    byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
+                    rtc.setTime(lcd_buf[index+6], lcd_buf[index+5], lcd_buf[index+4], lcd_buf[index+2], lcd_buf[index+1], (2000+lcd_buf[index])); //sc, mn, hr, dy, mt, yr
+                }    
+            }
+            //handle sensor zero calibration
+            //else if(){
+                #ifdef U600_RECALIBRATION_TRUE
+                co2Sensor.recalibration();
+                #endif
+            //}
         }
     }
 }
@@ -421,11 +524,16 @@ void extractS6Parameter(){
 void extractS1xS6Angle(){
     double m1 = s1Coefficients[1];
     double m2 = s6Coefficients[1];
-    double tanTheta =    (m2-m1)/(1+(m1*m2));
+    double tanTheta = (m2-m1)/(1+(m1*m2));
     S3rad = atan(tanTheta);
-    S3deg = (abs(S3rad)*180)/PI;
-    if(S3rad < 0){
-        S3deg = 180 - S3deg;
+    double tmp_S3deg = (abs(S3rad)*180)/PI;
+    if(!isnan(tmp_S3deg)){
+        if(tmp_S3deg < 0){
+            S3deg = 180 - tmp_S3deg;
+        }
+        else{
+            S3deg = tmp_S3deg;
+        }
     }
 }
 
@@ -495,155 +603,57 @@ void doLogging(){
     }
 }
 
-void updateDisplay(){
-    if(loggingIsOn){
-        updateCo2Disp();
-        updateEtCo2Disp();
-        updateRespirationRateDisp();
-        updateHjorthActDisplay();
-        updateS3DegDisplay();
+void setup() {
+    Serial.begin(115200);
+    Serial.print("I-Breath CO2 Device ");
+    Serial.println(app_ver);
+    Serial.println("System initialization ...");
+
+    for(int i=0; i< MAX_CAPNO_LENGTH; i++){
+        timeAxis[i] = i;
     }
-}
 
-void checkInputCmd(){
-    if(!loggingIsOn){ //check for input cmd from lcd
-        if(Serial1.available() > 0){
-            int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
-            lcd_buf[len] = 0; //null terminate
-            #ifdef DEBUG_LCD
-            for(int i = 0; i < len; i++){
-                Serial.print(lcd_buf[i], HEX);
-                Serial.print("h ");
-            }
-            Serial.println();
-            #endif
+    //LCD serial line
+    Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
 
-            char data_rtn_hdr[3] = {0x83, HIGH_BYTE(DATA_RTN_ADDR), LOW_BYTE(DATA_RTN_ADDR)};
-            char rtc_hdr[3] = {0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR)};
-            char *str = NULL;
+    Serial.println("... Initializing CO2 sensor.");
+    co2Sensor.init();
 
-            //handle patient name - check for matching header
-            if((str = strstr(reinterpret_cast<char *>(lcd_buf), data_rtn_hdr)) != NULL){
-                byte name_len = *(str + 3);
-                //verify the total data of at least the name len is available
-                if( len > ((str - reinterpret_cast<char *>(lcd_buf)) + name_len) ){
-                    byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
-                    for(int i = index; i < len; i++){
-                        if(lcd_buf[i] == 0xFF){
-                            byte cpy_len = (i - index);
-                            if(cpy_len > MAX_NAME_LEN){
-                                cpy_len = MAX_NAME_LEN;
-                            }
-                            memcpy(name_str, &lcd_buf[index], cpy_len);
-                            patient = String(name_str);
-                            #ifdef DEBUG_LCD
-                            Serial.println(patient);
-                            #endif
-                        }
-                    }
-                }    
-            }
-            //handle rtc reply - check for matching header
-            else if((str = strstr(reinterpret_cast<char *>(lcd_buf), rtc_hdr)) != NULL){
-                byte date_len = *(str + 3); //len in word
-                if( len >= ((str - reinterpret_cast<char *>(lcd_buf)) + (date_len*2) + sizeof(rtc_hdr) + 1) ){
-                    byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
-                    rtc.setTime(lcd_buf[index+6], lcd_buf[index+5], lcd_buf[index+4], lcd_buf[index+2], lcd_buf[index+1], (2000+lcd_buf[index])); //sc, mn, hr, dy, mt, yr
-                    #ifdef DEBUG_LCD
-                    char time_str[9] = {};
-                    sprintf(time_str, "%02d:%02d:%02d", lcd_buf[index+4], lcd_buf[index+5], lcd_buf[index+6]);
-                    Serial.println(time_str);
-                    #endif
-                }    
-            }
-            
-            //handle sensor zero calibration
+    #ifdef SDCARD_INIT
+    Serial.println("... Initializing SD card.");
+    if(SD_MMC.begin()){
+        if(SD_MMC.cardType() != CARD_NONE)
+        {
+            Serial.println("... SD card is available.");
+            sdCardAvailable = true;
         }
     }
+    #endif
+
+    Serial.println("... Initializing I/O.");
+    pinMode(USER_LED1, OUTPUT);
+    pinMode(buttonPin[0], INPUT);
+    pinMode(buttonPin[1], INPUT);
+    buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0); //debouncing for button[0]
+    displayTicker.attach_ms(DISP_DELAY_MS, updateDisplay);
+    lcdInputTicker.attach_ms(DISP_DELAY_MS*3, checkInputCmd);
+
+    Serial.println("... Initialization completed. Push button to start logging.");
+    requestCurrTime(); //query RTC from LCD module
+    delay(DISP_DELAY_MS);
 }
 
-void updateCo2Disp(){
-    static float co2Avg_cached = 0.0;
-    if(co2Avg_cached != co2Avg){
-        co2Avg_cached = co2Avg;
-        int32_t co2AvgInt = co2Avg*100;
-        char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, HIGH_BYTE(CURVE_ADDR), LOW_BYTE(CURVE_ADDR), 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
-        buf[12] = (co2AvgInt >> 24) & 0xFF;
-        buf[13] = (co2AvgInt >> 16) & 0xFF;
-        buf[14] = (co2AvgInt >> 8) & 0xFF;
-        buf[15] = (co2AvgInt & 0xFF);
-        Serial1.write(buf, sizeof(buf));
-    }
-}
-
-void updateEtCo2Disp(){
-    static float etCo2_cached = -0.001;
-    if(etCo2_cached != etCo2){
-        etCo2_cached = etCo2;
-        String str = String(etCo2);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(ETCO2_ADDR), LOW_BYTE(ETCO2_ADDR)};
-
-        if((str.length() + 6) <= sizeof(buf)){
-            buf[2] = str.length() + 3; //update length
-            memcpy(&buf[6], str.c_str(), str.length());
-            Serial1.write(buf, (str.length() + 6));
-        }
-        else{
-            Serial.println("Insufficient buffer size: ETCO2");
-        }
-    }
-}
-
-void updateRespirationRateDisp(){
-    static float RR_cached = -0.001;
-    if(RR_cached != respirationRate){
-        RR_cached = respirationRate;
-        String str = String(respirationRate);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(RR_ADDR), LOW_BYTE(RR_ADDR)};
-
-        if((str.length() + 6) <= sizeof(buf)){
-            buf[2] = str.length() + 3; //update length
-            memcpy(&buf[6], str.c_str(), str.length());
-            Serial1.write(buf, (str.length() + 6));
-        }
-        else{
-            Serial.println("Insufficient buffer size: Respiration Rate");
-        }
-    }
-}
-
-void updateHjorthActDisplay(){
-    static float HA_cached = 0.0;
-    if(HA_cached != hjorthActivity){
-        HA_cached = hjorthActivity;
-        String str = String(hjorthActivity);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(HA_ADDR), LOW_BYTE(HA_ADDR)};
-
-        if((str.length() + 6) <= sizeof(buf)){
-            buf[2] = str.length() + 3; //update length
-            memcpy(&buf[6], str.c_str(), str.length());
-            Serial1.write(buf, (str.length() + 6));
-        }
-        else{
-            Serial.println("Insufficient buffer size: Hjorth Activity");
-        }
-    }
-}
-
-void updateS3DegDisplay(){
-    static float S3deg_cached = 0.0;
-    if(S3deg_cached != S3deg){
-        S3deg_cached = S3deg;
-        String str = String(S3deg);
-        char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(S3_ADDR), LOW_BYTE(S3_ADDR)};
-
-        if((str.length() + 6) <= sizeof(buf)){
-            buf[2] = str.length() + 3; //update length
-            memcpy(&buf[6], str.c_str(), str.length());
-            Serial1.write(buf, (str.length() + 6));
-        }
-        else{
-            Serial.println("Insufficient buffer size: S3(degree)");
+void loop() {
+    loggingIsOn = isLoggingOn();
+    co2Sensor.read();
+    while(co2Sensor.isAvailable()){
+        co2_t* co2Packet = co2Sensor.getCo2Reading();
+        if(co2Packet!=NULL){
+            updateCo2(co2Packet);
+            updateEtCo2(co2Packet);
+            updateRespirationRate(co2Packet);
+            updateInspiration(co2Packet);
+            doLogging();
         }
     }
 }
