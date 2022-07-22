@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 1.2 (14/07/2022)
+// Rev 1.3 (22/07/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -20,7 +20,7 @@
 #define LOW_BYTE(x)     ((byte)((x)&0xFF))
 #define HIGH_BYTE(x)    ((byte)(((x)>>8)&0xFF))
 
-const char * app_ver = "v1.2";
+const char * app_ver = "v1.3";
 
 MovingAverageFilter movingAverageFilter(180); //Use 180 data points for moving average
 
@@ -61,7 +61,7 @@ Ticker lcdInputTicker;
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
 const int BTN_CHECK_MS = 10;
-static byte buttonPin[2] = {BUTTON_2, BUTTON_1};
+static byte buttonPin[2] = {BUTTON_1, BUTTON_2};
 static byte debouncedBtnState[2] = {1, 1};
 static bool buttonPressed[2] = {false, false};
 static byte buttonCount[2] = {BTN_DEBOUNCE_MS/BTN_CHECK_MS, BTN_DEBOUNCE_MS/BTN_CHECK_MS};
@@ -114,7 +114,8 @@ double S3deg = 0.0;
 //-------------------------------------------------------------------------------
 ///////////////////////////////// SD CARD ///////////////////////////////////////
 const byte MAX_NAME_LEN = 5;
-const char * loggingFile = "/data.csv";
+String defaultLoggingFile = "/test1.csv";
+char currentLoggingFile[11] = {};
 boolean sdCardAvailable = false;
 boolean loggingIsOn = false;
 String patient = "";
@@ -134,12 +135,14 @@ void updateCo2Disp(){
     static float co2Avg_cached = 0.0;
     if(co2Avg_cached != co2Avg){
         co2Avg_cached = co2Avg;
-        int32_t co2AvgInt = co2Avg*100;
+        static int16_t co2AvgPrev = 0;
+        int16_t co2AvgInt = co2Avg*100;
         char buf[16] = {0x5A, 0xA5, 0x0D, 0x82, HIGH_BYTE(CURVE_ADDR), LOW_BYTE(CURVE_ADDR), 0x5A, 0xA5, 0x01, 0x00, 0x00, 0x02};
-        buf[12] = (co2AvgInt >> 24) & 0xFF;
-        buf[13] = (co2AvgInt >> 16) & 0xFF;
+        buf[12] = (co2AvgPrev >> 8) & 0xFF;
+        buf[13] = (co2AvgPrev & 0xFF);
         buf[14] = (co2AvgInt >> 8) & 0xFF;
         buf[15] = (co2AvgInt & 0xFF);
+        co2AvgPrev = co2AvgInt; //store current value as previous value
         Serial1.write(buf, sizeof(buf));
     }
 }
@@ -263,7 +266,7 @@ boolean isLoggingOn(){
 
             Serial.print(header.c_str());
             if(sdCardAvailable){
-                appendFile(loggingFile, const_cast<char *>(header.c_str()));
+                appendFile(currentLoggingFile, const_cast<char *>(header.c_str()));
             }
             
             digitalWrite(USER_LED1, HIGH);
@@ -271,10 +274,9 @@ boolean isLoggingOn(){
         else{
             Serial.println("Logging stopped ....");
             digitalWrite(USER_LED1, LOW);
-            requestCurrTime(); //query RTC from LCD module
-            delay(DISP_DELAY_MS);
             resetData();
             updateDisplay();
+            requestCurrTime(); //query RTC from LCD module
         }
     }
     return current_logging_state;
@@ -380,7 +382,11 @@ void checkInputCmd(){
                                 cpy_len = MAX_NAME_LEN;
                             }
                             memcpy(name_str, &lcd_buf[index], cpy_len);
+                            snprintf(currentLoggingFile, sizeof(currentLoggingFile), "/%s.csv", name_str);
                             patient = String(name_str);
+                            #ifdef DEBUG_LCD
+                            Serial.println(name_str);
+                            #endif
                         }
                     }
                 }    
@@ -391,6 +397,11 @@ void checkInputCmd(){
                 if( len >= ((str - reinterpret_cast<char *>(lcd_buf)) + (date_len*2) + sizeof(rtc_hdr) + 1) ){
                     byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
                     rtc.setTime(lcd_buf[index+6], lcd_buf[index+5], lcd_buf[index+4], lcd_buf[index+2], lcd_buf[index+1], (2000+lcd_buf[index])); //sc, mn, hr, dy, mt, yr
+                    #ifdef DEBUG_LCD
+                    char time_str[9] = {};
+                    snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", lcd_buf[index+4], lcd_buf[index+5], lcd_buf[index+6]);
+                    Serial.println(time_str);
+                    #endif
                 }    
             }
             //handle sensor zero calibration
@@ -579,7 +590,7 @@ void doLogging(){
         epoch /= 60;
         byte hour = epoch % 24; 
         epoch /= 24;
-        sprintf(time_str, "%02d:%02d:%02d", hour, min, sec);
+        snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hour, min, sec);
   
         String log = "";
         String co2_data = String(co2Avg) + String(DELIM) +
@@ -598,7 +609,7 @@ void doLogging(){
         Serial.print(log.c_str());
 
         if(sdCardAvailable){
-            appendFile(loggingFile, const_cast<char *>(log.c_str()));
+            appendFile(currentLoggingFile, const_cast<char *>(log.c_str()));
         }
     }
 }
@@ -618,6 +629,8 @@ void setup() {
 
     Serial.println("... Initializing CO2 sensor.");
     co2Sensor.init();
+
+    memcpy(currentLoggingFile, defaultLoggingFile.c_str(), defaultLoggingFile.length());
 
     #ifdef SDCARD_INIT
     Serial.println("... Initializing SD card.");
