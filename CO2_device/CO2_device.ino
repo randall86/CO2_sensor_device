@@ -1,5 +1,5 @@
 // I-Breath CO2 Device
-// Rev 1.3 (22/07/2022)
+// Rev 1.3 (23/07/2022)
 // - Infinecs
 //Serial - UART serial monitor
 //Serial1 - LCD 
@@ -221,22 +221,27 @@ void updateS3DegDisplay(){
 
 void updateDisplay(){
     if(loggingIsOn){
-        updateCo2Disp();
-        updateEtCo2Disp();
-        updateRespirationRateDisp();
-        updateHjorthActDisplay();
-        updateS3DegDisplay();
+        updateDisplayForce();
     }
+}
+
+void updateDisplayForce(){
+    updateCo2Disp();
+    updateEtCo2Disp();
+    updateRespirationRateDisp();
+    updateHjorthActDisplay();
+    updateS3DegDisplay();
 }
 
 void requestCurrTime(){
     if(!loggingIsOn){ //only request the time if logging is not on
         char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
+        Serial1.flush(); //flush outgoing data if any - to ensure data reply is clean
         Serial1.write(buf, sizeof(buf));
     }
 }
 
-boolean isLoggingOn(){
+void isLoggingOn(){
     static boolean current_logging_state = false;
     if(buttonPressed[0]){
         buttonPressed[0] = false; //reset the button state
@@ -270,16 +275,18 @@ boolean isLoggingOn(){
             }
             
             digitalWrite(USER_LED1, HIGH);
+            loggingIsOn = true;
         }
         else{
             Serial.println("Logging stopped ....");
-            digitalWrite(USER_LED1, LOW);
-            resetData();
-            updateDisplay();
+            loggingIsOn = false;
             requestCurrTime(); //query RTC from LCD module
+            delay(DISP_DELAY_MS);
+            resetData();
+            updateDisplayForce();
+            digitalWrite(USER_LED1, LOW);
         }
     }
-    return current_logging_state;
 }
 
 void appendFile(const char * path, const char * data){
@@ -649,15 +656,14 @@ void setup() {
     pinMode(buttonPin[1], INPUT);
     buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0); //debouncing for button[0]
     displayTicker.attach_ms(DISP_DELAY_MS, updateDisplay);
-    lcdInputTicker.attach_ms(DISP_DELAY_MS*3, checkInputCmd);
+    lcdInputTicker.attach_ms(DISP_DELAY_MS, checkInputCmd);
 
     Serial.println("... Initialization completed. Push button to start logging.");
     requestCurrTime(); //query RTC from LCD module
-    delay(DISP_DELAY_MS);
 }
 
 void loop() {
-    loggingIsOn = isLoggingOn();
+    isLoggingOn();
     co2Sensor.read();
     while(co2Sensor.isAvailable()){
         co2_t* co2Packet = co2Sensor.getCo2Reading();
