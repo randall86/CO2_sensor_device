@@ -142,7 +142,7 @@ Ticker lcdInputTicker;
 ///////////////////////////////// Buttons ///////////////////////////////////////
 const int BTN_DEBOUNCE_MS = 50;
 const int BTN_CHECK_MS = 10;
-static byte buttonPin[2] = {BUTTON_2, BUTTON_1};
+static byte buttonPin[2] = {BUTTON_1, BUTTON_2};
 static byte debouncedBtnState[2] = {1, 1};
 static bool buttonPressed[2] = {false, false};
 static byte buttonCount[2] = {BTN_DEBOUNCE_MS/BTN_CHECK_MS, BTN_DEBOUNCE_MS/BTN_CHECK_MS};
