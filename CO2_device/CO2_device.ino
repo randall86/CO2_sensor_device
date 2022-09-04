@@ -19,9 +19,14 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <Wire.h>
+#include <BluetoothSerial.h>
 
-//experimental to increase stack size limit
+BluetoothSerial SerialBT;
+
+
+//experimental to increase stack size limit(NOTE: arduino IDE using precompile
 //#define CONFIG_ARDUINO_LOOP_STACK_SIZE 1024*32
+//#define CONFIG_ESP_TIMER_TASK_STACK_SIZE 1024*32
 
 //#define DEBUG_LCD
 #define SDCARD_INIT
@@ -36,6 +41,9 @@
 #define MILD 2
 #define SEVERE 3
 
+
+//Temporary LCD write time  30 August 2022 , 11:15:00 AM
+//byte TIME[]={0x5A,0xA5,0x0B,0x82,0x00,0x9C,0x5A,0xA5,0x16,0x08,0x1E,0x0B,0x0F,0x00};
 
 const char * app_ver = "v1.3";
 
@@ -65,19 +73,38 @@ const char NEWLINE = '\n';
 #define VOLTAGE_TO_ADC(in) ((ADC_REFERENCE * (in)) / 4096)
 #define BATTERY_MAX_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MAX))
 #define BATTERY_MIN_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MIN))
+#define FILTER_LEN  15
 
-int readADCVal = 0;
+uint32_t AN_Pot1_Buffer[FILTER_LEN] = {0};
+int AN_Pot1_i = 0;
+int AN_Pot1_Raw = 0;
+int AN_Pot1_Filtered = 0;
+
+//adc1_config_width(ADC_WIDTH_12Bit);
+//analogSetPinAttenuation(VBAT_ADC, ADC_11db);
+
+/*
+analogSetWidth(9);
+  analogReadResolution(9);                                                    // set the ADC resolution
+  analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
+  analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
+  
+  pinMode(GPIO_NUM_36, INPUT);                                                // set input mode
+  analogSetPinAttenuation(GPIO_NUM_36, ADC_11db);                             // ADC setting pin ADC1_CH0
+*/
+//int readADCVal = 0;
 //-------------------------------------------------------------------------------
 
 //-------------------------------------------------------------------------------
 /////////////////////////////////// Bluetooth /////////////////////////////////////////
-#define SERVICE_UUID "d351655c-f71d-49be-b432-3b6867edf8ca"
+#define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42f59"
 #define bleServerName "I-Breath"
 
 // AVGCO2 Characteristic and Descriptor
-BLECharacteristic bleAVGCO2Characteristics("b4099544-4f23-4ff1-89a1-d6c5823f735e", BLECharacteristic::PROPERTY_NOTIFY);
+BLECharacteristic bleAVGCO2Characteristics("ca73b3ba-39f6-4ab3-91ae-186dc9577d99", BLECharacteristic::PROPERTY_NOTIFY);
 BLEDescriptor bleAVGCO2Descriptor(BLEUUID((uint16_t)0x2901));
 
+/*
 // ETCO2 Characteristic and Descriptor
 BLECharacteristic bleETCO2Characteristics("36043252-5dd5-457d-baf4-b6ed8267257b", BLECharacteristic::PROPERTY_NOTIFY);
 BLEDescriptor bleETCO2Descriptor(BLEUUID((uint16_t)0x2902));
@@ -98,7 +125,7 @@ BLEDescriptor bleS3Descriptor(BLEUUID((uint16_t)0x2905));
 // name Characteristic and Descriptor
 BLECharacteristic bleNameCharacteristics("0a8f61ad-bcc3-4d95-8119-857998993ffa", BLECharacteristic::PROPERTY_NOTIFY);
 BLEDescriptor bleNameDescriptor(BLEUUID((uint16_t)0x2906));
-
+*/
 
 bool deviceConnected = false;
 
@@ -351,9 +378,10 @@ void updateRIMSDisplay(int status){
 
 void startBLEService()
 {
-
+  //Serial.println("Free heap ble init is " + String(ESP.getFreeHeap()));
   Serial.print("ESP Board MAC Address:  ");
   Serial.println(WiFi.macAddress());
+  
   //turn off BT classic to save memory
   esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
   
@@ -372,6 +400,7 @@ void startBLEService()
   bleAVGCO2Descriptor.setValue("AVGCO2");
   bleAVGCO2Characteristics.addDescriptor(&bleAVGCO2Descriptor);
 
+/*
   // Create BLE Characteristics and Create a BLE Descriptor
   bmeService->addCharacteristic(&bleETCO2Characteristics);
   bleETCO2Descriptor.setValue("ETCO2");
@@ -396,6 +425,7 @@ void startBLEService()
   bmeService->addCharacteristic(&bleNameCharacteristics);
   bleNameDescriptor.setValue("Patient Name");
   bleNameCharacteristics.addDescriptor(&bleNameDescriptor);
+*/
 
   // Start the service
   bmeService->start();
@@ -411,13 +441,15 @@ void startBLEService()
 
 
 void updateBLEData(){
-      char dataConvert[6];
+      char dataConvert[12];
       
       //Set Characteristic value and notify connected client
       dtostrf(co2Avg, 5, 2, dataConvert);
+      strcat(dataConvert, patient.c_str());
       bleAVGCO2Characteristics.setValue(dataConvert);
       bleAVGCO2Characteristics.notify();
 
+/*
       dtostrf(etCo2, 5, 2, dataConvert);
       bleETCO2Characteristics.setValue(dataConvert);
       bleETCO2Characteristics.notify();
@@ -437,6 +469,7 @@ void updateBLEData(){
       patient.toCharArray(dataConvert, 5);
       bleNameCharacteristics.setValue(dataConvert);
       bleNameCharacteristics.notify();
+      */
 }
 
 void updateDisplay(){
@@ -464,10 +497,48 @@ void requestCurrTime(){
     }
 }
 
-void calc_battery_percentage(){
-    readADCVal = analogRead(VBAT_ADC);
-    int battery_percentage = 100 * (readADCVal - BATTERY_MIN_ADC) / (BATTERY_MAX_ADC - BATTERY_MIN_ADC);
+void init_ADC_Pins(){
+    analogSetWidth(10);
+    analogReadResolution(10);                                                    // set the ADC resolution
+    //analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
+    analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
+  
+    pinMode(GPIO_NUM_36, INPUT);                                                // set input mode
+    analogSetPinAttenuation(GPIO_NUM_36, ADC_11db);                             // ADC setting pin ADC1_CH0
+}
 
+void calc_battery_percentage(){
+    int readADCVal = 0;
+    int readADCValAvg = 0;
+    int i = 0;
+    uint32_t Sum = 0;
+    readADCVal = analogRead(VBAT_ADC);
+
+
+  
+    AN_Pot1_Buffer[AN_Pot1_i++] = readADCVal;
+    if(AN_Pot1_i == FILTER_LEN)
+    {
+      AN_Pot1_i = 0;
+    }
+    for(i=0; i<FILTER_LEN; i++)
+    {
+      Sum += AN_Pot1_Buffer[i];
+    }
+    readADCValAvg = (Sum/FILTER_LEN);
+    
+    int battery_percentage = 100 * (readADCValAvg - BATTERY_MIN_ADC) / (BATTERY_MAX_ADC - BATTERY_MIN_ADC);
+    /*
+    Serial.println("ADC");
+    Serial.print(readADCValAvg);
+    Serial.print("\n");
+    Serial.print(battery_percentage);
+    Serial.print("\n");
+    Serial.print(BATTERY_MIN_ADC);
+    Serial.print("\n");
+    Serial.print(BATTERY_MAX_ADC);
+    Serial.print("\n");
+    */
     if (battery_percentage < 0){
         battery_percentage = 0;
     }
@@ -904,10 +975,12 @@ void setup() {
 
     //LCD serial line
     Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-
+    Serial.println("Free heap is before co2init " + String(ESP.getFreeHeap()));
     Serial.println("... Initializing CO2 sensor.");
-    co2Sensor.init();
-      
+    
+    //co2Sensor.init();
+    
+    //Serial.println("Free heap is after co2init " + String(ESP.getFreeHeap()));  
     memcpy(currentLoggingFile, defaultLoggingFile.c_str(), defaultLoggingFile.length());
 
     #ifdef SDCARD_INIT
@@ -929,12 +1002,25 @@ void setup() {
     displayTicker.attach_ms(DISP_DELAY_MS, updateDisplay);
     lcdInputTicker.attach_ms(DISP_DELAY_MS, checkInputCmd);
 
+    //init adc pins
+    init_ADC_Pins();
+
     //start BLE service
-    startBLEService();
+    //startBLEService();
+
+    //overwrite LCD time
+    //Serial1.write(TIME, sizeof(TIME));
     
     Serial.println("... Initialization completed. Push button to start logging.");
     requestCurrTime(); //query RTC from LCD module
-    
+    //Serial.println(uxTaskGetStackHighWaterMark( NULL ));
+    Serial.println("Free total heap is " + String(ESP.getFreeHeap()));
+
+     SerialBT.begin("ESP32test"); //Bluetooth device name
+  Serial.println("The device started, now you can pair it with bluetooth!");
+
+
+
 }
 
 void updateAsthmaSeverity(){
@@ -1017,6 +1103,13 @@ void loop() {
     calc_battery_percentage();
     isLoggingOn();
     co2Sensor.read();
+
+    if (Serial.available()) {
+       SerialBT.write(Serial.read());
+    }
+    if (SerialBT.available()) {
+       Serial.write(SerialBT.read());
+    }
     while(co2Sensor.isAvailable()){
         co2_t* co2Packet = co2Sensor.getCo2Reading();
         if(co2Packet!=NULL){
