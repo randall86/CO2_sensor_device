@@ -7,3 +7,5 @@ DWIN_SET is the folder/files to program the LCD directly
 lcd folder is the source code for the LCD GUI. To be used by DGUS programme
 
 For ESP32 software, both CO2_device and libraries are needed
+
+Bluetooth device name should be changed according to the device using this code in setup "SerialBT.begin("I-Breath3");"
