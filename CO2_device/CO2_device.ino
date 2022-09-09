@@ -12,21 +12,14 @@
 #include <curveFitting.h>
 #include <MovingAverageFilter.h>
 #include <ESP32Time.h>
-#include <WiFi.h>
-#include <esp_wifi.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
 #include <Wire.h>
 #include <BluetoothSerial.h>
 
 BluetoothSerial SerialBT;
 
 
-//experimental to increase stack size limit(NOTE: arduino IDE using precompile
-//#define CONFIG_ARDUINO_LOOP_STACK_SIZE 1024*32
-//#define CONFIG_ESP_TIMER_TASK_STACK_SIZE 1024*32
+//Temporary LCD write time  8 Sept 2022 , 11:50:00 AM
+//byte TIME[]={0x5A,0xA5,0x0B,0x82,0x00,0x9C,0x5A,0xA5,0x16,0x09,0x08,0x0B,0x32,0x00};
 
 //#define DEBUG_LCD
 #define SDCARD_INIT
@@ -41,9 +34,6 @@ BluetoothSerial SerialBT;
 #define MILD 2
 #define SEVERE 3
 
-
-//Temporary LCD write time  30 August 2022 , 11:15:00 AM
-//byte TIME[]={0x5A,0xA5,0x0B,0x82,0x00,0x9C,0x5A,0xA5,0x16,0x08,0x1E,0x0B,0x0F,0x00};
 
 const char * app_ver = "v1.3";
 
@@ -68,78 +58,22 @@ const char NEWLINE = '\n';
 #define R3 100  //voltage divider resistor
 #define VOLTAGE_MAX 4200
 #define VOLTAGE_MIN 3300
-#define VOLTAGE_OUT(Vin) (((Vin) * R3) / (R2 + R3))
+#define VOLTAGE_OUT(Vin) (((Vin) * R3) / (R2 + R3))  //2100
 #define ADC_REFERENCE 1100
-#define VOLTAGE_TO_ADC(in) ((ADC_REFERENCE * (in)) / 4096)
+#define VOLTAGE_TO_ADC(in) ((ADC_REFERENCE * (in)) / 4096)  //563
 #define BATTERY_MAX_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MAX))
 #define BATTERY_MIN_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MIN))
-#define FILTER_LEN  15
+
+#define FILTER_LEN  100
 
 uint32_t AN_Pot1_Buffer[FILTER_LEN] = {0};
 int AN_Pot1_i = 0;
 int AN_Pot1_Raw = 0;
 int AN_Pot1_Filtered = 0;
 
-//adc1_config_width(ADC_WIDTH_12Bit);
-//analogSetPinAttenuation(VBAT_ADC, ADC_11db);
-
-/*
-analogSetWidth(9);
-  analogReadResolution(9);                                                    // set the ADC resolution
-  analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
-  analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
-  
-  pinMode(GPIO_NUM_36, INPUT);                                                // set input mode
-  analogSetPinAttenuation(GPIO_NUM_36, ADC_11db);                             // ADC setting pin ADC1_CH0
-*/
 //int readADCVal = 0;
 //-------------------------------------------------------------------------------
 
-//-------------------------------------------------------------------------------
-/////////////////////////////////// Bluetooth /////////////////////////////////////////
-#define SERVICE_UUID "91bad492-b950-4226-aa2b-4ede9fa42f59"
-#define bleServerName "I-Breath"
-
-// AVGCO2 Characteristic and Descriptor
-BLECharacteristic bleAVGCO2Characteristics("ca73b3ba-39f6-4ab3-91ae-186dc9577d99", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleAVGCO2Descriptor(BLEUUID((uint16_t)0x2901));
-
-/*
-// ETCO2 Characteristic and Descriptor
-BLECharacteristic bleETCO2Characteristics("36043252-5dd5-457d-baf4-b6ed8267257b", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleETCO2Descriptor(BLEUUID((uint16_t)0x2902));
-
-// RR Characteristic and Descriptor
-BLECharacteristic bleRRCharacteristics("3241d188-50d2-4325-bce3-f42987b59e0b", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleRRDescriptor(BLEUUID((uint16_t)0x2903));
-
-// AVGACTCO2 Characteristic and Descriptor
-BLECharacteristic bleAVGACTCO2Characteristics("c90026ca-23a1-4c7a-9b5c-8eeda8dca19d", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleAVGACTCO2Descriptor(BLEUUID((uint16_t)0x2904));
-
-// S3 Characteristic and Descriptor
-BLECharacteristic bleS3Characteristics("b38f90d9-d30d-419f-90af-7c0175690c72", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleS3Descriptor(BLEUUID((uint16_t)0x2905));
-
-
-// name Characteristic and Descriptor
-BLECharacteristic bleNameCharacteristics("0a8f61ad-bcc3-4d95-8119-857998993ffa", BLECharacteristic::PROPERTY_NOTIFY);
-BLEDescriptor bleNameDescriptor(BLEUUID((uint16_t)0x2906));
-*/
-
-bool deviceConnected = false;
-
-//Setup callbacks onConnect and onDisconnect
-class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *pServer) {
-    deviceConnected = true;
-  };
-  void onDisconnect(BLEServer *pServer) {
-    deviceConnected = false;
-  }
-};
-
-//-------------------------------------------------------------------------------
 
 //-------------------------------------------------------------------------------
 /////////////////////////////////// RTC /////////////////////////////////////////
@@ -162,6 +96,7 @@ const int DISP_DELAY_MS = 100;
 byte lcd_buf[100] = {};
 Ticker displayTicker;
 Ticker lcdInputTicker;
+bool rtcRequestFlag = false;
 
 
 
@@ -223,12 +158,13 @@ double S3deg = 0.0;
 ///////////////////////////////// SD CARD ///////////////////////////////////////
 const byte MAX_NAME_LEN = 5;
 String defaultLoggingFile = "/test1.csv";
-char currentLoggingFile[11] = {};
+char currentLoggingFile[25] = {};
 File file;
 boolean sdCardAvailable = false;
 boolean loggingIsOn = false;
-String patient = "";
-char name_str[MAX_NAME_LEN + 1] = {}; //+1 for NULL
+String patient = "Test1";
+char name_str[MAX_NAME_LEN + 1] = {'T','e','s','t','1'}; //+1 for NULL
+
 Ticker loggingTicker;
 //----------------------------------------------------------------------------
 
@@ -376,108 +312,10 @@ void updateRIMSDisplay(int status){
     
 }
 
-void startBLEService()
-{
-  //Serial.println("Free heap ble init is " + String(ESP.getFreeHeap()));
-  Serial.print("ESP Board MAC Address:  ");
-  Serial.println(WiFi.macAddress());
-  
-  //turn off BT classic to save memory
-  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-  
-  // Create the BLE Device
-  BLEDevice::init(bleServerName);
-
-  // Create the BLE Server
-  BLEServer *pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  // Create the BLE Service
-  BLEService *bmeService = pServer->createService(SERVICE_UUID);
-
-  // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleAVGCO2Characteristics);
-  bleAVGCO2Descriptor.setValue("AVGCO2");
-  bleAVGCO2Characteristics.addDescriptor(&bleAVGCO2Descriptor);
-
-/*
-  // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleETCO2Characteristics);
-  bleETCO2Descriptor.setValue("ETCO2");
-  bleETCO2Characteristics.addDescriptor(&bleETCO2Descriptor);
-
-  // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleRRCharacteristics);
-  bleRRDescriptor.setValue("RR");
-  bleRRCharacteristics.addDescriptor(&bleRRDescriptor);
-
-    // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleAVGACTCO2Characteristics);
-  bleAVGACTCO2Descriptor.setValue("AVGACTCO2");
-  bleAVGACTCO2Characteristics.addDescriptor(&bleAVGACTCO2Descriptor);
-
-    // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleS3Characteristics);
-  bleS3Descriptor.setValue("S3");
-  bleS3Characteristics.addDescriptor(&bleS3Descriptor);
-
-      // Create BLE Characteristics and Create a BLE Descriptor
-  bmeService->addCharacteristic(&bleNameCharacteristics);
-  bleNameDescriptor.setValue("Patient Name");
-  bleNameCharacteristics.addDescriptor(&bleNameDescriptor);
-*/
-
-  // Start the service
-  bmeService->start();
-
-  // Start advertising
-  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pServer->getAdvertising()->start();
-
-  Serial.println("Waiting a client connection to notify...");
-}
-
-
-
-void updateBLEData(){
-      char dataConvert[12];
-      
-      //Set Characteristic value and notify connected client
-      dtostrf(co2Avg, 5, 2, dataConvert);
-      strcat(dataConvert, patient.c_str());
-      bleAVGCO2Characteristics.setValue(dataConvert);
-      bleAVGCO2Characteristics.notify();
-
-/*
-      dtostrf(etCo2, 5, 2, dataConvert);
-      bleETCO2Characteristics.setValue(dataConvert);
-      bleETCO2Characteristics.notify();
-
-      dtostrf(respirationRate, 5, 2, dataConvert);
-      bleRRCharacteristics.setValue(dataConvert);
-      bleRRCharacteristics.notify();
-
-      dtostrf(hjorthActivity, 5, 2, dataConvert);
-      bleAVGACTCO2Characteristics.setValue(dataConvert);
-      bleAVGACTCO2Characteristics.notify();
-
-      dtostrf(S3deg, 5, 2, dataConvert);
-      bleS3Characteristics.setValue(dataConvert);
-      bleS3Characteristics.notify();
-      
-      patient.toCharArray(dataConvert, 5);
-      bleNameCharacteristics.setValue(dataConvert);
-      bleNameCharacteristics.notify();
-      */
-}
-
 void updateDisplay(){
     if(loggingIsOn){
         updateDisplayForce();
-        if (deviceConnected){
-             updateBLEData();
-        }
+
     }
 }
 
@@ -490,22 +328,28 @@ void updateDisplayForce(){
 }
 
 void requestCurrTime(){
+    Serial.println("start init req time");
     if(!loggingIsOn){ //only request the time if logging is not on
         char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
         Serial1.flush(); //flush outgoing data if any - to ensure data reply is clean
+        delay(50);
         Serial1.write(buf, sizeof(buf));
+        rtcRequestFlag = true;
+        Serial.println("request time");
+
     }
 }
 
 void init_ADC_Pins(){
     analogSetWidth(10);
     analogReadResolution(10);                                                    // set the ADC resolution
-    //analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
-    analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
+    ////analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
+    //analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
   
     pinMode(GPIO_NUM_36, INPUT);                                                // set input mode
     analogSetPinAttenuation(GPIO_NUM_36, ADC_11db);                             // ADC setting pin ADC1_CH0
 }
+
 
 void calc_battery_percentage(){
     int readADCVal = 0;
@@ -528,9 +372,16 @@ void calc_battery_percentage(){
     readADCValAvg = (Sum/FILTER_LEN);
     
     int battery_percentage = 100 * (readADCValAvg - BATTERY_MIN_ADC) / (BATTERY_MAX_ADC - BATTERY_MIN_ADC);
-    /*
+
+    if (battery_percentage < 0){
+        battery_percentage = 0;
+    }
+    else if (battery_percentage > 100){
+        battery_percentage = 100;
+    }
+/*
     Serial.println("ADC");
-    Serial.print(readADCValAvg);
+    Serial.print(readADCVal);
     Serial.print("\n");
     Serial.print(battery_percentage);
     Serial.print("\n");
@@ -538,17 +389,10 @@ void calc_battery_percentage(){
     Serial.print("\n");
     Serial.print(BATTERY_MAX_ADC);
     Serial.print("\n");
-    */
-    if (battery_percentage < 0){
-        battery_percentage = 0;
-    }
-    else if (battery_percentage > 100){
-        battery_percentage = 100;
-    }
-
-    String str = String(battery_percentage);
+*/
+    String str = String(battery_percentage) + " ";
     char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(BATT_ADDR), LOW_BYTE(BATT_ADDR)};
-
+    
     if((str.length() + 6) <= sizeof(buf)){
          buf[2] = str.length() + 3; //update length
          memcpy(&buf[6], str.c_str(), str.length());
@@ -568,6 +412,27 @@ void isLoggingOn(){
         
         if(current_logging_state){
             Serial.println("Logging started ....");
+            byte second = rtc.getSecond();
+            byte min = rtc.getMinute();
+            byte hour = rtc.getHour(true)-8;
+            byte day = rtc.getDay();
+            byte month = rtc.getMonth();
+            short year = rtc.getYear();
+
+            if (year>2000){
+              year = year - 2000;
+              month = month + 1;
+            }
+
+            char dateTimeFormat[14];
+            
+            //yymmdd-hhmmss-name
+            sprintf(dateTimeFormat, "%02d%02d%02d-%02d%02d%02d",year,month,day,hour,min,second); 
+            
+            //Serial.println(dateTimeFormat);
+            //Serial.println(name_str);
+            snprintf(currentLoggingFile, sizeof(currentLoggingFile), "/%s-%s.csv", dateTimeFormat, name_str); 
+
             String header = "";
 
             if(patient.length()){
@@ -636,12 +501,12 @@ void deleteFileIfAvailable(const char * path){
 }
 
 void openFile(const char * path, const char * data){
-    file = SD_MMC.open(path, FILE_APPEND);
+    file = SD_MMC.open(path, FILE_WRITE);
     if(!file){
         Serial.println("Failed to open file for writing");
         return;
     }
-    if(!file.println(data)){
+    if(!file.print(data)){
         Serial.println("Write failed");
     }
     //file.close();
@@ -652,7 +517,7 @@ void closeFile(){
 }
 
 void writeFile(const char * path, const char * data){
-    if(!file.println(data)){
+    if(!file.print(data)){
           Serial.println("Append failed");
     }
 }
@@ -731,7 +596,8 @@ void checkInputCmd(){
                                 cpy_len = MAX_NAME_LEN;
                             }
                             memcpy(name_str, &lcd_buf[index], cpy_len);
-                            snprintf(currentLoggingFile, sizeof(currentLoggingFile), "/%s.csv", name_str);
+
+                            //snprintf(currentLoggingFile, sizeof(currentLoggingFile), "/%s.csv", name_str);
                             patient = String(name_str);
                             #ifdef DEBUG_LCD
                             Serial.println(name_str);
@@ -742,16 +608,35 @@ void checkInputCmd(){
             }
             //handle rtc reply - check for matching header
             else if((str = strstr(reinterpret_cast<char *>(lcd_buf), rtc_hdr)) != NULL){
+                
                 byte date_len = *(str + 3); //len in word
                 if( len >= ((str - reinterpret_cast<char *>(lcd_buf)) + (date_len*2) + sizeof(rtc_hdr) + 1) ){
                     byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
                     rtc.setTime(lcd_buf[index+6], lcd_buf[index+5], lcd_buf[index+4], lcd_buf[index+2], lcd_buf[index+1], (2000+lcd_buf[index])); //sc, mn, hr, dy, mt, yr
+                    Serial.println(lcd_buf[index]);
+                    if(lcd_buf[index] == 00){
+                    
+                         Serial.println("default RTC values");
+                         delay(50);
+                         requestCurrTime();
+                         rtcRequestFlag = true; 
+                    }
+                    else{
+                         rtcRequestFlag = false;
+                    }
                     #ifdef DEBUG_LCD
                     char time_str[9] = {};
                     snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", lcd_buf[index+4], lcd_buf[index+5], lcd_buf[index+6]);
                     Serial.println(time_str);
                     #endif
                 }    
+            }
+            
+            else if (rtcRequestFlag == true){
+              Serial.println("No RTC replied");
+              delay(50);
+              requestCurrTime();  
+              rtcRequestFlag = true;              
             }
             //handle sensor zero calibration
             //else if(){
@@ -940,10 +825,12 @@ void doLogging(){
         byte hour = epoch % 24; 
         epoch /= 24;
         snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", hour, min, sec);
-  
+        
+
+
         String log = "";
         String co2_data = String(co2Avg) + String(DELIM) +
-                        String(etCo2) + String(DELIM) +
+                        String(etCo2) + String(DELIM) +      
                         String(respirationRate) + String(DELIM) +
                         String(hjorthActivity) + String(DELIM) +
                         String(S3deg) + String(NEWLINE);
@@ -958,7 +845,7 @@ void doLogging(){
         Serial.print(log.c_str());
 
         if(sdCardAvailable){
-            openFile(currentLoggingFile, const_cast<char *>(log.c_str()));
+            writeFile(currentLoggingFile, const_cast<char *>(log.c_str()));
         }
     }
 }
@@ -975,12 +862,10 @@ void setup() {
 
     //LCD serial line
     Serial1.begin(115200, SERIAL_8N1, LCD_RX2, LCD_TX2);
-    Serial.println("Free heap is before co2init " + String(ESP.getFreeHeap()));
+
     Serial.println("... Initializing CO2 sensor.");
-    
-    //co2Sensor.init();
-    
-    //Serial.println("Free heap is after co2init " + String(ESP.getFreeHeap()));  
+    co2Sensor.init();
+      
     memcpy(currentLoggingFile, defaultLoggingFile.c_str(), defaultLoggingFile.length());
 
     #ifdef SDCARD_INIT
@@ -994,6 +879,12 @@ void setup() {
     }
     #endif
 
+    //overwrite LCD time
+    //Serial1.write(TIME, sizeof(TIME));
+
+    //init adc pins
+    init_ADC_Pins();
+
     Serial.println("... Initializing I/O.");
     pinMode(USER_LED1, OUTPUT);
     pinMode(buttonPin[0], INPUT);
@@ -1001,26 +892,13 @@ void setup() {
     buttonTicker.attach_ms(BTN_CHECK_MS, debounceBtnSWRoutine, 0); //debouncing for button[0]
     displayTicker.attach_ms(DISP_DELAY_MS, updateDisplay);
     lcdInputTicker.attach_ms(DISP_DELAY_MS, checkInputCmd);
-
-    //init adc pins
-    init_ADC_Pins();
-
-    //start BLE service
-    //startBLEService();
-
-    //overwrite LCD time
-    //Serial1.write(TIME, sizeof(TIME));
     
     Serial.println("... Initialization completed. Push button to start logging.");
     requestCurrTime(); //query RTC from LCD module
-    //Serial.println(uxTaskGetStackHighWaterMark( NULL ));
-    Serial.println("Free total heap is " + String(ESP.getFreeHeap()));
 
-     SerialBT.begin("ESP32test"); //Bluetooth device name
-  Serial.println("The device started, now you can pair it with bluetooth!");
-
-
-
+    SerialBT.begin("I-Breath3"); //Bluetooth device name
+    Serial.println("The device started, now you can pair it with bluetooth!");
+    
 }
 
 void updateAsthmaSeverity(){
@@ -1099,17 +977,19 @@ void updateAsthmaSeverity(){
   }
 }
 
-void loop() {
-    calc_battery_percentage();
-    isLoggingOn();
-    co2Sensor.read();
+void sendBTData() {
 
-    if (Serial.available()) {
-       SerialBT.write(Serial.read());
-    }
-    if (SerialBT.available()) {
-       Serial.write(SerialBT.read());
-    }
+  SerialBT.print(co2Avg);
+  SerialBT.print(",");
+  SerialBT.print(patient);
+  SerialBT.print("\n");  
+
+}
+
+void loop() {
+    
+    isLoggingOn();  //sdcard file setup
+    co2Sensor.read();
     while(co2Sensor.isAvailable()){
         co2_t* co2Packet = co2Sensor.getCo2Reading();
         if(co2Packet!=NULL){
@@ -1117,8 +997,12 @@ void loop() {
             updateEtCo2(co2Packet);
             updateRespirationRate(co2Packet);
             updateInspiration(co2Packet);
-            doLogging();
+            doLogging(); //logging to file
             updateAsthmaSeverity();
+               
+            calc_battery_percentage();
+            sendBTData();
+            
         }
     }
 }
