@@ -17,15 +17,14 @@
 
 BluetoothSerial SerialBT;
 
-// Timer variables
-unsigned long lastTimer = 0;
-unsigned long timerDelay = 20;
 TaskHandle_t serialTask;
 
 //Temporary LCD write time  20 Sept 2022 , 03:45:00 AM
 //byte TIME[]={0x5A,0xA5,0x0B,0x82,0x00,0x9C,0x5A,0xA5,0x16,0x09,0x14,0x03,0x2D,0x00};
 
+
 //#define DEBUG_LCD
+//#define DEBUG_CO2
 #define SDCARD_INIT
 //#define SHOW_PROC_SIGNAL
 
@@ -37,7 +36,6 @@ TaskHandle_t serialTask;
 #define NORMAL 1
 #define MILD 2
 #define SEVERE 3
-
 
 const char * app_ver = "v1.3";
 
@@ -54,7 +52,9 @@ const byte LCD_RX2 = 35; //swapped from schematics
 const byte LCD_TX2 = 33; //swapped from schematics
 
 const char DELIM = ',';
-const char NEWLINE = '\n';
+//NOTE: originally it was \n for CR but due to sometimes DWIN LCD returning \n in the middle of RTC reply , it causes issues like cannot read RTC time. \r not used by LCD.
+const char NEWLINE = '\r';  
+
 
 //-------------------------------------------------------------------------------
 /////////////////////////////////// ADC /////////////////////////////////////////
@@ -67,8 +67,8 @@ const char NEWLINE = '\n';
 #define VOLTAGE_TO_ADC(in) ((ADC_REFERENCE * (in)) / 4096)  //563
 #define BATTERY_MAX_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MAX))
 #define BATTERY_MIN_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MIN))
-
-#define FILTER_LEN  100
+//averaging for ADC level. NOTE: higher number better stability at the cost of performance. This will impact batt levels and also connection/response state.
+#define FILTER_LEN  40
 
 uint32_t AN_Pot1_Buffer[FILTER_LEN] = {0};
 int AN_Pot1_i = 0;
@@ -80,11 +80,8 @@ int AN_Pot1_Filtered = 0;
 ///////////////////////////////////BT////////////////////////////////////////////
 String btText = "";
 bool btConnectionStatus = false;
-
-// Timer variables
-//unsigned long lastTime = 0;
 bool lastTime = false;
-//unsigned long timerDelay = 50;
+
 
 //-------------------------------------------------------------------------------
 /////////////////////////////////// RTC /////////////////////////////////////////
@@ -104,7 +101,12 @@ const uint16_t RIMS_ADDR = 0x2500;
 const uint16_t BATT_ADDR = 0x2800;
 
 const int DISP_DELAY_MS = 100;
-byte lcd_buf[60] = {};
+//NOTE: This lcd_buf buffer size is done in such a way to reduce the chance of LCD sending RTC or Patient name as truncated.
+//As LCD does not use any \n \r, everytime ESP32 updates the graph or texts on LCD, it will send replies over.
+//These replies is send together with any RTC or Patient name.
+//Too big buffer will impact performance of BT connection and data output.
+//Too less will impact the part where needed data cannot be received reliabily.
+byte lcd_buf[84] = {};
 Ticker displayTicker;
 //Ticker lcdInputTicker;
 bool rtcRequestFlag = false;
@@ -202,7 +204,7 @@ void resetData(){
 }
 
 void updateCo2Disp(){
-    //commented out as LCD requires constant refresh else value disappears
+    //commented out as graph need to consistently plot out
     //static float co2Avg_cached = 0.0;
     //if(co2Avg_cached != co2Avg){
         //co2Avg_cached = co2Avg;
@@ -239,7 +241,7 @@ void updateEtCo2Disp(){
 }
 
 void updateRespirationRateDisp(){
-    //commented out as LCD requires constant refresh else value disappears
+    
     static float RR_cached = -0.001;
     if(RR_cached != respirationRate){
         RR_cached = respirationRate;
@@ -260,7 +262,7 @@ void updateRespirationRateDisp(){
 }
 
 void updateHjorthActDisplay(){
-    //commented out as LCD requires constant refresh else value disappears
+    
     static float HA_cached = -0.001;
     if(HA_cached != hjorthActivity){
         HA_cached = hjorthActivity;
@@ -281,11 +283,11 @@ void updateHjorthActDisplay(){
 }
 
 void updateS3DegDisplay(){
-    //commented out as LCD requires constant refresh else value disappears
+    
     static float S3deg_cached = -0.001;
 
     if(S3deg_cached != S3deg ){
-        //S3deg_cached = S3deg;
+        S3deg_cached = S3deg;
 
         String str = String(S3deg);
         char buf[32] = {0x5A, 0xA5, 0x00, 0x82, HIGH_BYTE(S3_ADDR), LOW_BYTE(S3_ADDR)};
@@ -334,11 +336,11 @@ void updateRIMSDisplay(int status){
 
 void updateloggingDisplay(){
      
-     if(loggingIsOn){ //logging started
+     if(loggingIsOn){ //TEXT: logging started
           byte buf[]={0x5A,0xA5,0x13,0x82,0x35,0x00,0x4C,0x6F,0x67,0x67,0x69,0x6E,0x67,0x20,0x73,0x74,0x61,0x72,0x74,0x65,0x64,0x0A};     
           Serial1.write(buf,sizeof(buf));
      }
-     else{            //logging stopped   4C 6F 67 67 69 6E 67 20 73 74 6F 70 70 65 64 0A
+     else{            //TEXT: logging stopped   4C 6F 67 67 69 6E 67 20 73 74 6F 70 70 65 64 0A
           byte buf[]={0x5A,0xA5,0x13,0x82,0x35,0x00,0x4C,0x6F,0x67,0x67,0x69,0x6E,0x67,0x20,0x73,0x74,0x6F,0x70,0x70,0x65,0x64,0x0A};
           Serial1.write(buf,sizeof(buf));
      }
@@ -361,15 +363,13 @@ void updateDisplayForce(){
 }
 
 void requestCurrTime(){
-    Serial.println("start init req time");
+    //Serial.println("start init req time");
     if(!loggingIsOn){ //only request the time if logging is not on
         char buf[7] = {0x5A, 0xA5, 0x04, 0x83, HIGH_BYTE(RTC_SYSVAR_ADDR), LOW_BYTE(RTC_SYSVAR_ADDR), 0x04};
         Serial1.flush(); //flush outgoing data if any - to ensure data reply is clean
-        //delay(10);
         Serial1.write(buf, sizeof(buf));
         rtcRequestFlag = true;
-        //delay(50);
-        Serial.println("request time");
+        //Serial.println("request time");
 
     }
 }
@@ -377,9 +377,6 @@ void requestCurrTime(){
 void init_ADC_Pins(){
     analogSetWidth(10);
     analogReadResolution(10);                                                    // set the ADC resolution
-    ////analogSetCycles(8);                                                         // successive ADC conversions to reduce noise impact
-    //analogSetAttenuation(ADC_11db);                                             // Global ADC setting: ADC range 0 - 3.3 V
-  
     pinMode(GPIO_NUM_36, INPUT);                                                // set input mode
     analogSetPinAttenuation(GPIO_NUM_36, ADC_11db);                             // ADC setting pin ADC1_CH0
 }
@@ -391,8 +388,6 @@ void calc_battery_percentage(){
     int i = 0;
     uint32_t Sum = 0;
     readADCVal = analogRead(VBAT_ADC);
-
-
   
     AN_Pot1_Buffer[AN_Pot1_i++] = readADCVal;
     if(AN_Pot1_i == FILTER_LEN)
@@ -500,8 +495,9 @@ void isLoggingOn(){
                      String("RR") + String(DELIM) +
                      String("AVGACTCO2") + String(DELIM) +
                      String("S3(degree)") + String(NEWLINE);
-
+            #ifdef DEBUG_CO2
             Serial.print(header.c_str());
+            #endif
             if(sdCardAvailable){
                 openFile(currentLoggingFile, const_cast<char *>(header.c_str()));
             }
@@ -510,8 +506,9 @@ void isLoggingOn(){
             loggingIsOn = true;
         }
         else{
-            Serial.println("Logging stopped ....");
             loggingIsOn = false;
+            Serial.println("Logging stopped ....");
+            
             requestCurrTime(); //query RTC from LCD module
             //delay(DISP_DELAY_MS);
             //resetData();
@@ -648,25 +645,25 @@ void checkInputCmd(){
 
                             //snprintf(currentLoggingFile, sizeof(currentLoggingFile), "/%s.csv", name_str);
                             patient = String(name_str);
-                            //#ifdef DEBUG_LCD
+                            #ifdef DEBUG_LCD
                             Serial.println(name_str);
-                            //#endif
+                            #endif
                         }
                     }
                 }    
             }
             //handle rtc reply - check for matching header
             else if((str = strstr(reinterpret_cast<char *>(lcd_buf), rtc_hdr)) != NULL){
-                Serial.println("time receive");
+                
                 byte date_len = *(str + 3); //len in word
                 if( len >= ((str - reinterpret_cast<char *>(lcd_buf)) + (date_len*2) + sizeof(rtc_hdr) + 1) ){
                     byte index = (str + 4) - reinterpret_cast<char *>(lcd_buf);
                     rtc.setTime(lcd_buf[index+6], lcd_buf[index+5], lcd_buf[index+4], lcd_buf[index+2], lcd_buf[index+1], (2000+lcd_buf[index])); //sc, mn, hr, dy, mt, yr
-                    Serial.println(lcd_buf[index]);
+                    Serial.println("RTC Time Received");
+                    //check whether LCD returns default value , if yes retry again. Note: Sometimes LCD will return 00 for all , thus need retry and get the correct datetime
                     if(lcd_buf[index] == 00 && rtcMaxRetries !=5){
                     
                          Serial.println("default RTC values");
-                         //delay(50);
                          requestCurrTime();
                          rtcRequestFlag = true;
                          rtcMaxRetries ++;
@@ -686,8 +683,7 @@ void checkInputCmd(){
             
             else if (rtcRequestFlag == true && rtcMaxRetries !=5){
               Serial.println("No RTC replied");
-              //delay(50);
-              requestCurrTime();  
+              requestCurrTime(); 
               rtcRequestFlag = true;
               rtcMaxRetries ++;              
             }
@@ -906,9 +902,9 @@ void doLogging(){
         //else{
             log = String(time_str) + String(DELIM) + co2_data;
         //}
-
+        #ifdef DEBUG_CO2
         Serial.print(log.c_str());
-
+        #endif
         if(sdCardAvailable){
             writeFile(currentLoggingFile, const_cast<char *>(log.c_str()));
         }
@@ -965,7 +961,7 @@ void setup() {
 
     SerialBT.register_callback(callback);
     //Bluetooth device name
-    if(!SerialBT.begin("I-Breath1")){
+    if(!SerialBT.begin("I-Breath3")){
         Serial.println("... BT initialization error"); 
     }
     else{
@@ -1003,18 +999,18 @@ void setup() {
     initializationState = true;
     requestCurrTime(); //query RTC from LCD module
     
+    
+    
 }
 //core 0 task
 void Task1code( void * pvParameters ){
-  Serial.print("Task1 running on core ");
-  Serial.println(xPortGetCoreID());
 
   for(;;){
-    //if ((millis() - lastTimer) > timerDelay) {
-        if(initializationState){
-           checkInputCmd();
-        }
-    //}
+    
+    if(initializationState){
+       checkInputCmd();
+       calc_battery_percentage();     
+    }
     vTaskDelay(1);
   }
 
@@ -1099,13 +1095,10 @@ void updateAsthmaSeverity(){
 void sendBTData() {
 
   if (btConnectionStatus) {
-     //if ((millis() - lastTime) > timerDelay) {
-        //lastTime = millis();
      if(lastTime == true){
         lastTime=false; 
         btText = "#" + String(co2Avg) + "," + String(patient) + "\n";
-        SerialBT.print(btText.c_str());
-        
+        SerialBT.print(btText.c_str());     
      }
      else{
         lastTime=true;
@@ -1127,7 +1120,6 @@ void loop() {
             updateInspiration(co2Packet);
             doLogging(); //logging to file
             updateAsthmaSeverity();
-            calc_battery_percentage();
             sendBTData();
             
         }
