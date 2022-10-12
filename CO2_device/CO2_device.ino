@@ -52,8 +52,13 @@ const byte LCD_RX2 = 35; //swapped from schematics
 const byte LCD_TX2 = 33; //swapped from schematics
 
 const char DELIM = ',';
-//NOTE: originally it was \n for CR but due to sometimes DWIN LCD returning \n in the middle of RTC reply , it causes issues like cannot read RTC time. \r not used by LCD.
-const char NEWLINE = '\r';  
+//NOTE: originally it was \n for CR but due to sometimes DWIN LCD returning \n in the middle of RTC reply , it causes issues like cannot read RTC time.
+//to solve buffer truncation and detect each command reply, we will based on DWIN Frame header 5A A5. In this case we will scan for Z.
+//Note: DWIN keyboard currently does not have any capital letters support thus it is save to used as interim solution. In future, this needs to enhance including the readbytesuntil or refactor
+//entire design to scan for 5A A5. 
+const char DWINFRAME = 'Z'; 
+
+const char NEWLINE = '\n';  
 
 
 //-------------------------------------------------------------------------------
@@ -68,14 +73,19 @@ const char NEWLINE = '\r';
 #define BATTERY_MAX_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MAX))
 #define BATTERY_MIN_ADC VOLTAGE_TO_ADC(VOLTAGE_OUT(VOLTAGE_MIN))
 //averaging for ADC level. NOTE: higher number better stability at the cost of performance. This will impact batt levels and also connection/response state.
-#define FILTER_LEN  40
+#define FILTER_LEN  100
 
 uint32_t AN_Pot1_Buffer[FILTER_LEN] = {0};
 int AN_Pot1_i = 0;
 int AN_Pot1_Raw = 0;
 int AN_Pot1_Filtered = 0;
+int last_battery_percentage = 0;
 
-//int readADCVal = 0;
+// Timer variables
+unsigned long lastTimer = 0;
+unsigned long timerDelay = 100;
+
+
 //-------------------------------------------------------------------------------
 ///////////////////////////////////BT////////////////////////////////////////////
 String btText = "";
@@ -103,10 +113,9 @@ const uint16_t BATT_ADDR = 0x2800;
 const int DISP_DELAY_MS = 100;
 //NOTE: This lcd_buf buffer size is done in such a way to reduce the chance of LCD sending RTC or Patient name as truncated.
 //As LCD does not use any \n \r, everytime ESP32 updates the graph or texts on LCD, it will send replies over.
-//These replies is send together with any RTC or Patient name.
 //Too big buffer will impact performance of BT connection and data output.
 //Too less will impact the part where needed data cannot be received reliabily.
-byte lcd_buf[84] = {};
+byte lcd_buf[30] = {};
 Ticker displayTicker;
 //Ticker lcdInputTicker;
 bool rtcRequestFlag = false;
@@ -401,12 +410,25 @@ void calc_battery_percentage(){
     readADCValAvg = (Sum/FILTER_LEN);
     
     int battery_percentage = 100 * (readADCValAvg - BATTERY_MIN_ADC) / (BATTERY_MAX_ADC - BATTERY_MIN_ADC);
-
+  
     if (battery_percentage < 0){
         battery_percentage = 0;
     }
     else if (battery_percentage > 100){
         battery_percentage = 100;
+    }
+      
+    uint8_t percentage_diff = (unsigned int)(last_battery_percentage - battery_percentage);
+    //Serial.print(percentage_diff);
+    //Serial.print("\n");
+    //if percentage is difference of 2 or less , dont update as avg Batt value keep jumping and unstable
+    if(percentage_diff <= 2){
+        //Serial.println("maintain percentage");
+        battery_percentage = last_battery_percentage;
+    }
+    else{
+        //Serial.println("change percentage");
+        last_battery_percentage = battery_percentage;
     }
 /*
     Serial.println("ADC");
@@ -615,7 +637,7 @@ void checkInputCmd(){
     if(!loggingIsOn){ //check for input cmd from lcd
         if(Serial1.available() > 0){
             
-            int len = Serial1.readBytesUntil(NEWLINE, lcd_buf, sizeof(lcd_buf));
+            int len = Serial1.readBytesUntil(DWINFRAME, lcd_buf, sizeof(lcd_buf));
             lcd_buf[len] = 0; //null terminate
             #ifdef DEBUG_LCD
             for(int i = 0; i < len; i++){
@@ -672,6 +694,7 @@ void checkInputCmd(){
                     else{
                          rtcRequestFlag = false;
                          rtcMaxRetries = 0;
+                         
                     }
                     #ifdef DEBUG_LCD
                     char time_str[9] = {};
@@ -680,13 +703,14 @@ void checkInputCmd(){
                     #endif
                 }    
             }
-            
+            /*
             else if (rtcRequestFlag == true && rtcMaxRetries !=5){
               Serial.println("No RTC replied");
               requestCurrTime(); 
               rtcRequestFlag = true;
               rtcMaxRetries ++;              
             }
+            */
             //handle sensor zero calibration
             //else if(){
                 #ifdef U600_RECALIBRATION_TRUE
@@ -1006,10 +1030,12 @@ void setup() {
 void Task1code( void * pvParameters ){
 
   for(;;){
-    
-    if(initializationState){
-       checkInputCmd();
-       calc_battery_percentage();     
+    checkInputCmd();
+       
+    int currentTimer = millis();
+    if ((currentTimer - lastTimer) > timerDelay) {
+       calc_battery_percentage();
+       lastTime = currentTimer;
     }
     vTaskDelay(1);
   }
