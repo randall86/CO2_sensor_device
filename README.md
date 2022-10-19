@@ -10,7 +10,7 @@ For ESP32 software, both CO2_device and libraries are needed
 
 Bluetooth device name should be changed according to the device using this code in setup "SerialBT.begin("I-Breath3");"
 
-To update LCD time , uncomment the lines below and update the code below to the current time
+To update LCD time , uncomment the lines below and update the code below to the current time to reprogram the LCD. Note remember to comment back else it will keep reprogram the LCD time upon power up
 
 
 
