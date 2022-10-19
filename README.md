@@ -13,8 +13,10 @@ Bluetooth device name should be changed according to the device using this code 
 To update LCD time , uncomment the lines below and update the code below to the current time
 
 
+
 //Temporary LCD write time  20 Sept 2022 , 03:45:00 AM  0x16,0x09,0x14,0x03,0x2D,0x00 represents YY,MM,DD,HH,Min,SS
 //byte TIME[]={0x5A,0xA5,0x0B,0x82,0x00,0x9C,0x5A,0xA5,0x16,0x09,0x14,0x03,0x2D,0x00};
+
 
 void setup(){
 
